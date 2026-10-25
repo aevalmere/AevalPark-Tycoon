@@ -21,6 +21,17 @@ export function SettingsContent({ onChange, inGame }: { onChange?: (s: Settings)
           options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
       </div>
       {inGame && <p className="hint">The map style applies the next time you load a company.</p>}
+      <div className="field-row">
+        <span className="field-label">Graphics</span>
+        <Segmented label="Graphics" value={s.graphics} onChange={(v) => update({ graphics: v })}
+          options={[
+            { value: 'high', label: 'High', title: 'Full resolution on sharp screens' },
+            { value: 'balanced', label: 'Balanced', title: 'Caps resolution on high-DPI screens' },
+            { value: 'low', label: 'Fast', title: 'Lowest resolution, no shadows, glows or antialiasing' },
+          ]} />
+      </div>
+      <p className="hint">If the city stutters, try Fast.{inGame ? ' Resolution changes now; antialiasing on your next load.' : ''}</p>
+      <Toggle label="Show frame rate" checked={s.showFps} onChange={(v) => update({ showFps: v })} />
       <Toggle label="Day and night cycle" checked={s.dayNight} onChange={(v) => update({ dayNight: v })} />
       <Toggle label="Sound effects" checked={s.sound} onChange={(v) => { update({ sound: v }); if (v) sfx.play('coin'); }} />
       <div className="field-row">

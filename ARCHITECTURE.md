@@ -38,7 +38,9 @@ One real second at 1× is one game minute. The sim steps at a fixed 1/60 game mi
 
 - `router.ts`: A* over directed edges weighted by live travel time, starting and ending part-way along a road. Scratch arrays are reused between searches.
 - `systems.ts`: periodic systems in a registry: traffic, patience, dispatch, NPC traffic, demand, tutorial, parking turnover, dealer sales, goals, growth, stats, calendar, economy, game-over checks.
-- `content.ts`: structure definitions (costs, upkeep, levels, radius) and goals.
+- `content.ts`: structure definitions (costs, upkeep, levels, radius, taxi bays by footprint) and goals.
+- `advisor.ts`: what a structure would do on a given site (reach, unmet demand, overlap, upkeep). Build previews read it.
+- Unmet demand is remembered in the runtime (`parkDemand`, `taxiDemand`: building id → recent misses) and fades every half hour. It is not saved.
 - `balance.ts`: every tunable number.
 
 Traffic per directed edge is `1 − (1 − occupancy)(1 − background)(1 − incident)`, smoothed. Speed is `speedFactor(traffic)`. Kerbside taxi drops add an incident to the edge (and a smaller one to the reverse edge) for a few minutes.
@@ -46,9 +48,12 @@ Traffic per directed edge is `1 − (1 − occupancy)(1 − background)(1 − in
 ## Rendering (`render/`)
 
 - `MapView.ts`: MapLibre map. District buildings are one GeoJSON `fill-extrusion` layer whose colour and height come from **feature-state** (role, level, hover, selection, build preview), so changes never re-upload geometry. Traffic is one line per direction of travel, coloured by feature-state, updated only for edges whose rounded level changed.
-- `ModelLayer.ts`: a WebGL2 custom layer in MapLibre's 3D pass. Cars, taxis, people and parked cars are instanced boxes in local metres; one matrix maps local metres to clip space, and the depth buffer is shared with the building extrusions so towers hide what's behind them.
-- `Overlay.ts`: a 2D canvas for UI drawn in world space (rider bubbles, badges, floating money, incident pulses, night glows), projected with the same matrix.
-- `GameRenderer.ts`: glue; reads the simulation, writes to the three layers above, runs day/night lighting.
+- `ModelLayer.ts`: a WebGL2 custom layer in MapLibre's 3D pass. Cars, taxis, people, parked cars, depot offices and showrooms are instanced boxes in local metres; one matrix maps local metres to clip space, and the depth buffer is shared with the building extrusions so towers hide what's behind them. Three passes: blended ground decals (shadows, selection halos), opaque solids, then glass.
+- `layout.ts`: where things go inside a converted footprint (stalls and their paint, a depot's office and bays, a showroom, a lot's booth facing the street). Computed once per structure.
+- `Overlay.ts`: a 2D canvas for UI drawn in world space (rider bubbles, badges, floating money, incident pulses, night glows, selection outlines, demand heat), projected with the same matrix. Anything with a blur or gradient is rendered once into a sprite and stamped each frame.
+- `GameRenderer.ts`: glue; reads the simulation, writes to the layers above, highlights the selection and the vehicles tied to it, runs day/night lighting. It stops requesting repaints while the game is paused with nothing selected.
+
+Feature-state writes make MapLibre re-upload paint buffers, so `MapView` only writes when a value actually changes. Graphics quality (`mapQuality`) caps the canvas pixel ratio and, on Fast, drops antialiasing, contact shadows and glows.
 - `style.ts`: the basemap palette, game colours, and `visualHeight`, which compresses tall towers so downtown streets stay visible.
 
 ## Extending
@@ -62,7 +67,7 @@ Traffic per directed edge is `1 − (1 − occupancy)(1 − background)(1 − in
 
 **A new goal**: one entry in `GOALS`.
 
-**A save format change**: bump `STATE_VERSION` and add a migration to `MIGRATIONS` in `sim/setup.ts`.
+**A save format change**: bump `STATE_VERSION` and add a migration to `MIGRATIONS` in `sim/setup.ts`. (Version 2 turned flat parking fees into hourly rates.)
 
 ## Multiplayer
 

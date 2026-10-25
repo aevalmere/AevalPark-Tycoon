@@ -32,7 +32,8 @@ export type Tool = 'select' | StructureKind | 'road';
 export type Selection =
   | { kind: 'building'; idx: number }
   | { kind: 'trip'; id: string }
-  | { kind: 'link'; idx: number };
+  | { kind: 'link'; idx: number }
+  | { kind: 'vehicle'; id: number };
 
 export interface Toast {
   id: number;
@@ -54,6 +55,9 @@ export interface Hud {
   failed: number;
   traffic: number;
   active: number;
+  /** rating change over the last game hour */
+  ratingTrend: number;
+  fps: number;
   goals: number;
   gameOver: null | 'bankrupt' | 'rating';
   tutorial: number;
@@ -66,10 +70,12 @@ export type Panel = null | 'goals' | 'stats' | 'menu' | 'settings' | 'help';
 export interface GameUi {
   tool: Tool;
   selection: Selection | null;
-  hover: { kind: 'building' | 'link'; idx: number; x: number; y: number } | null;
+  hover: { kind: 'building' | 'link' | 'vehicle'; idx: number; x: number; y: number } | null;
   toasts: Toast[];
   panel: Panel;
   trafficView: boolean;
+  /** camera rides along with the selected vehicle */
+  follow: boolean;
   hud: Hud;
   /** bumps a few times a second so detail panels re-read the simulation */
   tick: number;
@@ -77,5 +83,5 @@ export interface GameUi {
 
 export const emptyHud: Hud = {
   money: 0, rating: 3, time: 0, speed: 1, waiting: 0, needTaxi: 0, needParking: 0, served: 0, failed: 0,
-  traffic: 0, active: 0, goals: 0, gameOver: null, tutorial: -1, serviceLevel: 0, lowRating: false,
+  traffic: 0, active: 0, ratingTrend: 0, fps: 60, goals: 0, gameOver: null, tutorial: -1, serviceLevel: 0, lowRating: false,
 };

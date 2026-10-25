@@ -10,6 +10,8 @@ export interface GameCtxValue {
   act: (cmd: Command, success?: string) => boolean;
   toast: (level: Toast['level'], text: string, focus?: Toast['focus']) => void;
   focus: (x: number, y: number, zoom?: number) => void;
+  /** select and fly to the waiting rider closest to giving up (cycles on repeat) */
+  urgent: () => void;
   quit: () => void;
 }
 

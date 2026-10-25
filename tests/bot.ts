@@ -35,7 +35,7 @@ export function botTurn(sim: Simulation) {
   }
 
   if (needTaxi.length >= 2 && money() > TAXI_PRICE + 2500) {
-    const room = depots.find((d) => (d.taxis ?? 0) < taxiCapacity(d.level));
+    const room = depots.find((d) => (d.taxis ?? 0) < taxiCapacity(sim.wb(d.building)!, d.level));
     if (room) sim.dispatch({ type: 'buyTaxi', structure: room.id });
     else {
       const d = depots[0];

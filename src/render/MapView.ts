@@ -4,9 +4,17 @@
 import { Map as MlMap, type ExpressionSpecification, type GeoJSONSource } from 'maplibre-gl';
 import './maplibre';
 import type { World } from '../world/types';
-import { COLORS, DARK_COLORS, TRAFFIC_STOPS, loadBaseStyle, visualHeight, type MapStyle } from './style';
+import { COLORS, DARK_COLORS, DECK_HEIGHT, LOT_BASE, TRAFFIC_STOPS, YARD_HEIGHT, loadBaseStyle, visualHeight, type MapStyle } from './style';
 
 export const ROLE = { none: 0, active: 1, hq: 2, lot: 3, dealer: 4, taxi: 5, outside: 6 } as const;
+/** feature-state `reach`: customers a selected (or previewed) lot or dealership serves */
+export const REACH = { none: 0, lot: 1, dealer: 2 } as const;
+
+export interface MapQuality {
+  /** canvas pixels per CSS pixel */
+  pixelRatio: number;
+  antialias: boolean;
+}
 
 const SRC_B = 'apt-buildings';
 const SRC_T = 'apt-traffic';
@@ -39,6 +47,9 @@ export class MapView {
   private hovered = -1;
   private selected = -1;
   private previewed = -1;
+  private previewState = 0;
+  private reached: number[] = [];
+  private reachCode = 0;
   private trafficQ: Uint8Array;
   private destroyed = false;
 
@@ -53,7 +64,7 @@ export class MapView {
     return this.world.proj.toLngLat(x, y);
   }
 
-  async mount(container: HTMLElement, mapStyle: MapStyle, serviceRadius: number): Promise<void> {
+  async mount(container: HTMLElement, mapStyle: MapStyle, serviceRadius: number, quality: MapQuality): Promise<void> {
     const base = await loadBaseStyle(mapStyle);
     if (this.destroyed) return;
     this.styleOk = base.ok;
@@ -73,7 +84,8 @@ export class MapView {
       maxPitch: 70,
       maxBounds: [sw, ne],
       attributionControl: { compact: true },
-      canvasContextAttributes: { antialias: true },
+      canvasContextAttributes: { antialias: quality.antialias },
+      pixelRatio: quality.pixelRatio,
       fadeDuration: 0,
     });
     this.map.dragRotate.enable();
@@ -177,6 +189,11 @@ export class MapView {
       ROLE.outside, C.outside,
       C.inactive];
     const prev: ExpressionSpecification = ['coalesce', ['feature-state', 'prev'], 0];
+    const reach: ExpressionSpecification = ['coalesce', ['feature-state', 'reach'], 0];
+    const tinted: ExpressionSpecification = ['match', reach,
+      REACH.lot, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachLot],
+      REACH.dealer, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachDealer],
+      baseColor];
     map.addLayer({
       id: 'apt-buildings', type: 'fill-extrusion', source: SRC_B,
       paint: {
@@ -185,11 +202,12 @@ export class MapView {
           ['==', prev, 2], C.invalid,
           ['interpolate', ['linear'],
             ['case', ['boolean', ['feature-state', 'sel'], false], 0.45, ['boolean', ['feature-state', 'hover'], false], 0.28, 0],
-            0, baseColor, 1, '#ffffff']],
+            0, tinted, 1, '#ffffff']],
+        // lots grow a deck per level; depots and dealerships are paved yards with their buildings drawn as models
         'fill-extrusion-height': ['match', role,
-          ROLE.lot, ['+', 0.6, ['*', ['-', lvl, 1], 3.2]],
-          ROLE.taxi, 7,
-          ROLE.dealer, 9,
+          ROLE.lot, ['+', LOT_BASE, ['*', ['-', lvl, 1], DECK_HEIGHT]],
+          ROLE.taxi, YARD_HEIGHT,
+          ROLE.dealer, YARD_HEIGHT,
           ['get', 'h']],
         'fill-extrusion-base': ['match', role, ROLE.lot, 0, ROLE.taxi, 0, ROLE.dealer, 0, ['get', 'b']],
         'fill-extrusion-opacity': 0.96,
@@ -255,15 +273,34 @@ export class MapView {
     if (idx >= 0) this.map.setFeatureState({ source: SRC_B, id: idx }, { sel: true });
   }
 
+  // Every feature-state write makes MapLibre re-upload that tile's paint buffers,
+  // so the setters below only write when something actually changed.
+
   /** build preview tint: 1 valid, 2 invalid, 0 none */
   setPreview(idx: number, state: 0 | 1 | 2) {
+    if (!state) idx = -1;
+    if (idx === this.previewed && state === this.previewState) return;
     if (this.previewed >= 0 && this.previewed !== idx) this.map.setFeatureState({ source: SRC_B, id: this.previewed }, { prev: 0 });
-    this.previewed = state ? idx : -1;
+    this.previewed = idx;
+    this.previewState = state;
     if (idx >= 0) this.map.setFeatureState({ source: SRC_B, id: idx }, { prev: state });
   }
 
+  /** tint the customers a lot or dealership reaches */
+  setReach(list: number[], code: number) {
+    const next = new Set(list);
+    for (const i of this.reached) if (!next.has(i)) this.map.setFeatureState({ source: SRC_B, id: i }, { reach: 0 });
+    const prev = new Set(this.reached);
+    for (const i of list) if (!prev.has(i) || this.reachCode !== code) this.map.setFeatureState({ source: SRC_B, id: i }, { reach: code });
+    this.reached = list;
+    this.reachCode = code;
+  }
+
   private highlighted: number[] = [];
+  private highlightedLink = -1;
   highlightLink(link: number) {
+    if (link === this.highlightedLink) return;
+    this.highlightedLink = link;
     for (const e of this.highlighted) this.map.setFeatureState({ source: SRC_T, id: e }, { hl: false });
     this.highlighted = link >= 0 ? this.world.linkEdges[link] : [];
     for (const e of this.highlighted) this.map.setFeatureState({ source: SRC_T, id: e }, { hl: true });
@@ -307,6 +344,18 @@ export class MapView {
   linkAt(px: number, py: number): number {
     const hits = this.map.queryRenderedFeatures([[px - 7, py - 7], [px + 7, py + 7]], { layers: ['apt-traffic'] });
     return hits.length ? Number(hits[0].properties.link) : -1;
+  }
+
+  /** Opening shot: start high over the district and settle onto HQ. */
+  establish(x: number, y: number) {
+    const target = { center: this.ll(x, y), zoom: 16.4, pitch: 52, bearing: -18 };
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { this.map.jumpTo(target); return; }
+    this.map.jumpTo({ center: this.ll(x * 0.4, y * 0.4), zoom: 14.6, pitch: 15, bearing: -60 });
+    this.map.easeTo({ ...target, duration: 2800, easing: (t) => 1 - Math.pow(1 - t, 3), essential: true });
+  }
+
+  setPixelRatio(r: number) {
+    if (Math.abs(this.map.getPixelRatio() - r) > 0.01) this.map.setPixelRatio(r);
   }
 
   flyToLocal(x: number, y: number, zoom?: number) {

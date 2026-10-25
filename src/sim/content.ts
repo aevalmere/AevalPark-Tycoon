@@ -27,8 +27,13 @@ export function parkingSpaces(b: WorldBuilding, level: number) {
   return perDeck * level;
 }
 
-export function taxiCapacity(level: number) {
-  return [0, 3, 6, 10][level] ?? 10;
+/** Taxi bays per level scale with the yard: a corner shop fits a couple of cabs, a warehouse lot a fleet. */
+export function taxiBays(b: WorldBuilding) {
+  return Math.max(2, Math.min(10, Math.round(b.area / 120)));
+}
+
+export function taxiCapacity(b: WorldBuilding, level: number) {
+  return taxiBays(b) * level;
 }
 
 export function dealerRadius(level: number) {
@@ -40,7 +45,7 @@ export const STRUCTURES: Record<StructureKind, StructureDef> = {
     kind: 'taxi',
     name: 'Taxi Depot',
     verb: 'Open taxi depot',
-    blurb: 'Dispatches taxis to riders without a car. Kerbside drop-offs slow traffic unless a parking lot is near the destination.',
+    blurb: 'Dispatches taxis to riders without a car. Bigger buildings make bigger yards with more taxi bays. Kerbside drop-offs slow traffic unless a parking lot is near the destination.',
     color: '#f5b82e',
     maxLevel: 3,
     levelNames: ['Taxi stand', 'Taxi depot', 'Dispatch hub'],

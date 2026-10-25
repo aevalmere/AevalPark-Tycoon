@@ -2,7 +2,7 @@
 // directly, which is the seam a multiplayer server would sit behind: clients
 // send commands, the authority validates and applies them.
 
-import { ROAD_UPGRADE, SERVICE_LEVELS } from './balance';
+import { PARKING, ROAD_UPGRADE, SERVICE_LEVELS, UNDO_WINDOW } from './balance';
 import { STRUCTURES, TAXI_PRICE, taxiCapacity } from './content';
 import type { Simulation } from './simulation';
 import { newId, type Structure, type StructureKind } from './state';
@@ -42,6 +42,18 @@ export function checkBuild(sim: Simulation, kind: StructureKind, buildingIdx: nu
   return { ok: true, cost };
 }
 
+/** What selling a structure returns: everything inside the undo window, 40% of the build cost after. */
+export function refundFor(sim: Simulation, st: Structure): number {
+  const b = sim.wb(st.building);
+  if (!b) return 0;
+  const cost = STRUCTURES[st.kind].cost(b);
+  return undoable(sim, st) ? cost : Math.round(cost * 0.4);
+}
+
+export function undoable(sim: Simulation, st: Structure) {
+  return st.level === 1 && sim.state.time - st.builtAt <= UNDO_WINDOW;
+}
+
 export function roadUpgradeCost(sim: Simulation, linkIdx: number) {
   const l = sim.world.links[linkIdx];
   const extra = sim.state.roads[l.id] ?? 0;
@@ -77,7 +89,7 @@ export function applyCommand(sim: Simulation, cmd: Command, by: string): Command
         ring: Array.from(b.ring, (v) => Math.round(v * 10) / 10),
         height: b.height,
       };
-      if (cmd.kind === 'parking') { st.fee = 8; st.parked = []; }
+      if (cmd.kind === 'parking') { st.fee = PARKING.rate; st.parked = []; }
       if (cmd.kind === 'taxi') st.taxis = 1;
       if (cmd.kind === 'dealership') st.sales = 0;
       s.structures[st.id] = st;
@@ -107,7 +119,7 @@ export function applyCommand(sim: Simulation, cmd: Command, by: string): Command
       const st = own(cmd.structure);
       if (!st) return fail('Not yours.');
       const b = sim.wb(st.building);
-      const refund = b ? Math.round(STRUCTURES[st.kind].cost(b) * 0.4) : 0;
+      const refund = refundFor(sim, st);
       for (const v of [...sim.vehicles.values()]) {
         if (st.kind === 'taxi' && v.kind === 'taxi' && v.depot === st.id) {
           if (v.task === 'toDrop') { v.depot = null; continue; }
@@ -125,6 +137,12 @@ export function applyCommand(sim: Simulation, cmd: Command, by: string): Command
           if (trip) sim.failTrip(trip, 'parking');
         }
       }
+      // parked drivers collect their cars and head home
+      const lotB = st.kind === 'parking' ? b : undefined;
+      for (const p of st.parked ?? []) {
+        const home = sim.wb(p.home);
+        if (lotB?.access && home?.access) sim.spawnVehicle('car', 'home', lotB.access, home.access, p.color, { home: p.home });
+      }
       sim.lotReserved.delete(st.id);
       delete s.structures[st.id];
       sim.structureAt.delete(st.building);
@@ -136,14 +154,18 @@ export function applyCommand(sim: Simulation, cmd: Command, by: string): Command
     case 'setFee': {
       const st = own(cmd.structure);
       if (!st || st.kind !== 'parking') return fail('Not a parking lot.');
-      st.fee = Math.max(0, Math.min(30, Math.round(cmd.fee)));
+      st.fee = Math.max(0, Math.min(PARKING.maxRate, Math.round(cmd.fee)));
       return { ok: true };
     }
 
     case 'buyTaxi': {
       const st = own(cmd.structure);
       if (!st || st.kind !== 'taxi') return fail('Not a taxi depot.');
-      if ((st.taxis ?? 0) >= taxiCapacity(st.level)) return fail('Depot is full. Upgrade it for more bays.');
+      const b = sim.wb(st.building);
+      if (!b) return fail('Building missing.');
+      if ((st.taxis ?? 0) >= taxiCapacity(b, st.level)) {
+        return fail(st.level < STRUCTURES.taxi.maxLevel ? 'Every bay is full. Upgrade the depot for more.' : 'Every bay is full. Open another depot.');
+      }
       if (!sim.spend(TAXI_PRICE, company)) return fail(`Needs ${money(TAXI_PRICE)}.`);
       st.taxis = (st.taxis ?? 0) + 1;
       return { ok: true };

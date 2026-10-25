@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { SERVICE_LEVELS } from '../../sim/balance';
-import { GOALS } from '../../sim/content';
+import { GOALS, STRUCTURES } from '../../sim/content';
 import { hourOf } from '../../sim/state';
 import { Stars } from '../components';
-import { clock, compactMoney, dayLabel, money } from '../format';
+import { clock, compactMoney, dayLabel, money, phaseOf } from '../format';
 import { Icon } from '../icons';
 import { useStore } from '../store';
 import { useGame } from './context';
@@ -29,6 +29,28 @@ function MoneyCounter({ value }: { value: number }) {
   );
 }
 
+/** Hover card under the cash: where today's money came from and went. */
+function MoneyCard() {
+  const { session, ui } = useGame();
+  useStore(ui, (s) => s.tick);
+  const sim = session.sim, s = sim.state, t = s.stats.today;
+  let upkeep = 0;
+  for (const st of Object.values(s.structures)) {
+    const b = sim.wb(st.building);
+    if (b) upkeep += STRUCTURES[st.kind].upkeepPerDay(st, b);
+  }
+  const hourAgo = [...s.history].reverse().find((h) => h.t <= s.time - 60);
+  const flow = hourAgo ? sim.me.money - hourAgo.money : null;
+  return (
+    <div className="tb-pop" role="tooltip">
+      <div className="row"><span>Earned today</span><b className="mono pos">{money(t.revenue)}</b></div>
+      <div className="row"><span>Spent today</span><b className="mono neg">{money(t.expenses)}</b></div>
+      <div className="row"><span>Upkeep</span><b className="mono">{money(upkeep)}/day</b></div>
+      {flow !== null && <div className="row"><span>Last hour</span><b className={`mono ${flow >= 0 ? 'pos' : 'neg'}`}>{flow >= 0 ? '+' : ''}{money(flow)}</b></div>}
+    </div>
+  );
+}
+
 export function TopBar() {
   const { session, ui, act } = useGame();
   const hud = useStore(ui, (s) => s.hud);
@@ -36,6 +58,8 @@ export function TopBar() {
   const trafficView = useStore(ui, (s) => s.trafficView);
   const hour = hourOf(hud.time);
   const night = hour < 6 || hour >= 19.5;
+  const phase = phaseOf(hud.time);
+  const trend = Math.abs(hud.ratingTrend) >= 0.03 ? Math.sign(hud.ratingTrend) : 0;
   const next = SERVICE_LEVELS[hud.serviceLevel + 1];
   const meta = session.sim.state.meta;
   const setSpeed = (speed: number) => act({ type: 'setSpeed', speed });
@@ -51,15 +75,19 @@ export function TopBar() {
       </div>
 
       <div className="tb-group tb-main">
-        <MoneyCounter value={hud.money} />
-        <div className={`tb-rating ${hud.lowRating ? 'warn' : ''}`} title="Your rating: an average of recent riders' satisfaction">
+        <div className="tb-money" tabIndex={0}>
+          <MoneyCounter value={hud.money} />
+          <MoneyCard />
+        </div>
+        <div className={`tb-rating ${hud.lowRating ? 'warn' : ''}`} title={`Your rating: an average of recent riders' satisfaction${trend ? ` (${hud.ratingTrend > 0 ? 'up' : 'down'} ${Math.abs(hud.ratingTrend).toFixed(2)} in the last hour)` : ''}`}>
           <Stars value={hud.rating} size={15} />
           <span className="mono">{hud.rating.toFixed(1)}</span>
+          {trend !== 0 && <span className={`trend ${trend > 0 ? 'up' : 'down'}`} aria-label={trend > 0 ? 'rising' : 'falling'}><Icon.Trend size={13} /></span>}
         </div>
-        <div className="tb-clock" title={dayLabel(hud.time)}>
+        <div className="tb-clock" title={`${dayLabel(hud.time)} · ${phase.label}${phase.rush ? ': arterials fill up, expect slow traffic' : ''}`}>
           {night ? <Icon.Moon size={15} /> : <Icon.Sun size={15} />}
           <span className="mono">{clock(hud.time)}</span>
-          <span className="tb-day">{dayLabel(hud.time)}</span>
+          <span className="tb-day">{dayLabel(hud.time)} · <span className={phase.rush ? 'rush' : ''}>{phase.label}</span></span>
         </div>
         <div className="speed" role="group" aria-label="Game speed">
           <button type="button" className={hud.speed === 0 ? 'on' : ''} aria-label="Pause" title="Pause (Space)" onClick={() => setSpeed(0)}><Icon.Pause size={14} /></button>

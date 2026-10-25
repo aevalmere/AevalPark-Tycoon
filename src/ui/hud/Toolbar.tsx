@@ -15,9 +15,9 @@ const TOOLS: { tool: Tool; key: string; label: string; icon: ReactNode; color?: 
 
 const TOOL_HINTS: Record<Tool, string> = {
   select: '',
-  taxi: 'Click a building inside your service area to open a taxi depot there.',
-  parking: `Click a building to convert it into a parking lot. Drivers walk up to ${PARK_WALK_RADIUS} m from it.`,
-  dealership: `Click a building to open a dealership. It sells cars within ${dealerRadius(1)} m.`,
+  taxi: 'Yellow glow marks riders who went without a taxi. Bigger buildings make bigger yards.',
+  parking: `Blue glow marks drivers who found nowhere to park. Drivers walk up to ${PARK_WALK_RADIUS} m from a lot.`,
+  dealership: `A dealership sells cars to customers within ${dealerRadius(1)} m. Tinted buildings are in reach.`,
   road: 'Click a street to see its traffic and add lanes.',
 };
 
@@ -45,7 +45,7 @@ export function ToolHint() {
   if (tool === 'select') return null;
   return (
     <div className="tool-hint" role="status">
-      {TOOL_HINTS[tool]} <span className="tool-hint-esc">Right-click or Esc to stop.</span>
+      {TOOL_HINTS[tool]} <span className="tool-hint-esc">{tool === 'road' ? 'Right-click or Esc to stop.' : 'Shift-click to keep building · Esc to stop.'}</span>
     </div>
   );
 }

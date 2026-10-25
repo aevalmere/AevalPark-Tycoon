@@ -7,13 +7,18 @@ import type { LatLng } from '../core/geo';
 import { createRng, type RngState } from '../core/rng';
 import { DIFFICULTY, RATING, type Difficulty } from './balance';
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 export type StructureKind = 'parking' | 'dealership' | 'taxi';
 
 export interface ParkedCar {
   home: string;
+  /** where the driver walked to, for the lot's catchment lines */
+  dest?: string;
+  since: number;
   until: number;
+  /** hourly rate posted when the car came in; billed on the way out */
+  rate: number;
   color: number;
 }
 
@@ -28,7 +33,7 @@ export interface Structure {
   /** footprint remembered so the structure survives map-data changes between sessions */
   ring: number[];
   height: number;
-  // parking
+  // parking: hourly rate
   fee?: number;
   parked?: ParkedCar[];
   // taxi

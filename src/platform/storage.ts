@@ -101,8 +101,13 @@ export function firstFreeSlot(): number {
 
 // ---------- settings ----------
 
+/** high: full resolution; balanced: caps resolution on high-DPI screens; low: also drops antialiasing, shadows and glows */
+export type Graphics = 'high' | 'balanced' | 'low';
+
 export interface Settings {
   mapStyle: 'light' | 'dark';
+  graphics: Graphics;
+  showFps: boolean;
   dayNight: boolean;
   sound: boolean;
   volume: number;
@@ -111,7 +116,7 @@ export interface Settings {
 }
 
 const SETTINGS = 'aevalpark.v1.settings';
-const DEFAULT_SETTINGS: Settings = { mapStyle: 'light', dayNight: true, sound: true, volume: 0.5, units: 'metric', autosave: true };
+const DEFAULT_SETTINGS: Settings = { mapStyle: 'light', graphics: 'balanced', showFps: false, dayNight: true, sound: true, volume: 0.5, units: 'metric', autosave: true };
 
 export function loadSettings(): Settings {
   try {

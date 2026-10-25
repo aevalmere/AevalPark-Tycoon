@@ -36,6 +36,22 @@ export const MAX_TRIP = 1100;
 
 export const PARK_WALK_RADIUS = 260;
 export const TAXI_LOT_RADIUS = 200;
+/** how far around a depot site the build preview counts riders */
+export const TAXI_REACH = 450;
+
+/** Lots bill per started hour when the car leaves. */
+export const PARKING = {
+  rate: 4,
+  maxRate: 15,
+  /** hourly rate drivers accept without grumbling */
+  fairRate: 3,
+};
+
+/** Demolishing within this many game minutes of building refunds everything (misclick undo). */
+export const UNDO_WINDOW = 20;
+
+/** Unmet demand is remembered per building and fades by this factor every half hour. */
+export const DEMAND_FADE = 0.85;
 
 export const TAXI = {
   base: 22,

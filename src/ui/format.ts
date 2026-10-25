@@ -18,6 +18,18 @@ export function clock(t: number) {
 
 export const dayLabel = (t: number) => `Day ${dayOf(t)}`;
 
+/** What the city is doing at this hour; rush hours are when arterials clog. */
+export function phaseOf(t: number): { label: string; rush: boolean } {
+  const h = hourOf(t);
+  if (h < 5) return { label: 'Night', rush: false };
+  if (h < 7) return { label: 'Early morning', rush: false };
+  if (h < 10) return { label: 'Morning rush', rush: true };
+  if (h < 16) return { label: 'Midday', rush: false };
+  if (h < 19.5) return { label: 'Evening rush', rush: true };
+  if (h < 22.5) return { label: 'Evening', rush: false };
+  return { label: 'Night', rush: false };
+}
+
 export function distance(m: number, units: 'metric' | 'imperial') {
   if (units === 'imperial') {
     const ft = m * 3.28084;

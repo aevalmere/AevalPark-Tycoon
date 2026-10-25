@@ -5,7 +5,7 @@ import { clamp } from '../core/geo';
 import { pick, poisson, randRange, weightedPick } from '../core/rng';
 import type { WorldBuilding } from '../world/types';
 import {
-  BANKRUPT_AT, BASE_LOAD, CAR_SPACE, DEALER, JAM_OCCUPANCY, MAX_TRIP, MAX_WAITING, MIN_TRIP, NPC, PARK_WALK_RADIUS,
+  BANKRUPT_AT, BASE_LOAD, CAR_SPACE, DEALER, DEMAND_FADE, JAM_OCCUPANCY, MAX_TRIP, MAX_WAITING, MIN_TRIP, NPC, PARK_WALK_RADIUS,
   PATIENCE, PATIENCE_ASSIGNED_RATE, RATING, activityCurve, rushCurve,
 } from './balance';
 import { GOALS, STRUCTURES, dealerRadius } from './content';
@@ -255,12 +255,30 @@ function parkingSystem(sim: Simulation) {
     if (!lot.parked?.length) continue;
     const lotB = sim.wb(lot.building);
     const keep = [];
+    let paid = 0;
     for (const p of lot.parked) {
       if (p.until > s.time) { keep.push(p); continue; }
+      // billed per started hour at the rate posted when they parked
+      paid += Math.ceil(Math.max(1, s.time - p.since) / 60) * p.rate;
       const home = sim.wb(p.home);
-      if (home?.access && lotB?.access) sim.spawnVehicle('car', 'home', lotB.access, home.access, p.color, { home: p.home });
+      if (home?.access && lotB?.access) sim.spawnVehicle('car', 'home', lotB.access, home.access, p.color, { home: p.home, lot: lot.id });
     }
     lot.parked = keep;
+    if (paid > 0) {
+      sim.earn(paid);
+      lot.revenue += paid;
+      if (lotB) sim.events.emit({ type: 'money', amount: paid, x: lotB.cx, y: lotB.cy, z: lot.level * 3.2 + 2 });
+    }
+  }
+}
+
+/** Unmet demand fades, so the hotspots a build preview shows are recent ones. */
+function demandMemorySystem(sim: Simulation) {
+  for (const map of [sim.parkDemand, sim.taxiDemand]) {
+    for (const [k, v] of map) {
+      const n = v * DEMAND_FADE;
+      if (n < 0.1) map.delete(k); else map.set(k, n);
+    }
   }
 }
 
@@ -395,6 +413,7 @@ export const SYSTEMS: SimSystem[] = [
   { id: 'dealer', every: 5, run: dealerSystem },
   { id: 'verdict', every: 10, run: verdictSystem },
   { id: 'growth', every: 15, run: growthSystem },
+  { id: 'demand-memory', every: 30, run: demandMemorySystem },
   { id: 'stats', every: 15, run: statsSystem },
   { id: 'economy', every: 60, run: economySystem },
 ];

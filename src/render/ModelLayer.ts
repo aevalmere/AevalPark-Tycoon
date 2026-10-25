@@ -1,6 +1,8 @@
-// Instanced low-poly models (cars, taxis, people) drawn inside MapLibre's 3D
-// pass so tall buildings hide what's behind them. Each instance is a box with
-// position, heading, size, colour and an emissive flag (head/tail lights).
+// Instanced low-poly models (cars, taxis, people, depot offices, showrooms)
+// drawn inside MapLibre's 3D pass so tall buildings hide what's behind them.
+// Each instance is a box with position, heading, size, colour and an emissive
+// flag (head/tail lights). Three passes: blended ground decals (shadows,
+// highlight halos), opaque solids, then see-through glass over the solids.
 // Geometry is in local metres; one matrix maps local metres to clip space.
 
 import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodInput, type Map as MlMap } from 'maplibre-gl';
@@ -87,8 +89,10 @@ export class ModelLayer implements CustomLayerInterface {
   private model: Float64Array;
   private solids: Float32Array = new Float32Array(0);
   private shadows: Float32Array = new Float32Array(0);
+  private glass: Float32Array = new Float32Array(0);
   private nSolid = 0;
   private nShadow = 0;
+  private nGlass = 0;
   private vertexCount = 0;
 
   constructor(id: string, proj: LocalProjection, private onRender: (layer: ModelLayer) => void) {
@@ -104,11 +108,13 @@ export class ModelLayer implements CustomLayerInterface {
   }
 
   /** Swap in this frame's instances; arrays may be longer than the counts. */
-  setInstances(solids: Float32Array, nSolid: number, shadows: Float32Array, nShadow: number) {
+  setInstances(solids: Float32Array, nSolid: number, shadows: Float32Array, nShadow: number, glass: Float32Array, nGlass: number) {
     this.solids = solids;
     this.nSolid = nSolid;
     this.shadows = shadows;
     this.nShadow = nShadow;
+    this.glass = glass;
+    this.nGlass = nGlass;
   }
 
   onAdd(_map: MlMap, gl: WebGL2RenderingContext) {
@@ -175,7 +181,7 @@ export class ModelLayer implements CustomLayerInterface {
     // mainMatrix takes 0..1 web-mercator coordinates with conformal z, matching this.model
     this.matrix = mul(options.defaultProjectionData.mainMatrix as unknown as ArrayLike<number>, this.model);
     this.onRender(this);
-    if (!this.prog || !this.vao || (!this.nSolid && !this.nShadow)) return;
+    if (!this.prog || !this.vao || (!this.nSolid && !this.nShadow && !this.nGlass)) return;
 
     gl.useProgram(this.prog);
     gl.uniformMatrix4fv(this.loc.u_matrix, false, new Float32Array(this.matrix));
@@ -202,6 +208,18 @@ export class ModelLayer implements CustomLayerInterface {
       gl.depthMask(true);
       this.upload(gl, this.solids, this.nSolid);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, this.vertexCount, this.nSolid);
+    }
+    if (this.nGlass) {
+      // lit, blended, tested against the solids but not hiding them
+      gl.uniform1f(this.loc.u_ambient, this.lighting.ambient);
+      gl.uniform1f(this.loc.u_diffuse, this.lighting.diffuse);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      this.upload(gl, this.glass, this.nGlass);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, this.vertexCount, this.nGlass);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
     }
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);

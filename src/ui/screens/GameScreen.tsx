@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSession } from '../../game/session';
 import { sfx } from '../../platform/audio';
-import type { Coverage } from '../../render/MapView';
+import { REACH, type Coverage } from '../../render/MapView';
+import { reachOf } from '../../sim/advisor';
 import { PARK_WALK_RADIUS } from '../../sim/balance';
 import { checkBuild, type Command } from '../../sim/commands';
 import { STRUCTURES, dealerRadius } from '../../sim/content';
@@ -9,7 +10,7 @@ import { money } from '../format';
 import { Icon } from '../icons';
 import { createStore, emptyHud, type GameUi, type Toast } from '../store';
 import { CityPulse } from '../hud/CityPulse';
-import { GameCtx, type GameCtxValue } from '../hud/context';
+import { GameCtx, useGame, type GameCtxValue } from '../hud/context';
 import { Feed } from '../hud/Feed';
 import { Inspector } from '../hud/Inspector';
 import { GameOver, GoalsPanel, PauseMenu, StatsPanel } from '../hud/Panels';
@@ -21,6 +22,9 @@ import { useStore } from '../store';
 
 let toastId = 1;
 
+/** keys that move the camera while held */
+const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'q', 'e', '=', '+', '-', '_']);
+
 export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: () => void }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -28,7 +32,7 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
   const [mountErr, setMountErr] = useState<string | null>(null);
   const lastSpeed = useRef(1);
   const ui = useMemo(() => createStore<GameUi>({
-    tool: 'select', selection: null, hover: null, toasts: [], panel: null, trafficView: false, hud: emptyHud, tick: 0,
+    tool: 'select', selection: null, hover: null, toasts: [], panel: null, trafficView: false, follow: false, hud: emptyHud, tick: 0,
   }), []);
 
   const toast = useCallback((level: Toast['level'], text: string, focus?: Toast['focus']) => {
@@ -42,11 +46,27 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
     return r.ok;
   }, [session, toast]);
 
-  const focus = useCallback((x: number, y: number, zoom?: number) => session.renderer?.view.flyToLocal(x, y, zoom), [session]);
+  const focus = useCallback((x: number, y: number, zoom?: number) => {
+    if (ui.get().follow) ui.set({ follow: false });
+    session.renderer?.view.flyToLocal(x, y, zoom);
+  }, [session, ui]);
+
+  const urgent = useCallback(() => {
+    const sim = session.sim;
+    const waiting = Object.values(sim.state.trips).filter((t) => t.status !== 'riding')
+      .sort((a, b) => (1 - a.waited / a.patience) - (1 - b.waited / b.patience));
+    if (!waiting.length) { toast('info', 'Nobody is waiting right now.'); return; }
+    const cur = ui.get().selection;
+    const at = cur?.kind === 'trip' ? waiting.findIndex((t) => t.id === cur.id) : -1;
+    const t = waiting[(at + 1) % waiting.length];
+    const o = sim.wb(t.origin);
+    ui.set({ selection: { kind: 'trip', id: t.id }, tool: 'select' });
+    if (o) focus(o.cx, o.cy);
+  }, [session, ui, toast, focus]);
 
   const quit = useCallback(() => { onQuit(); }, [onQuit]);
 
-  const ctx: GameCtxValue = useMemo(() => ({ session, ui, act, toast, focus, quit }), [session, ui, act, toast, focus, quit]);
+  const ctx: GameCtxValue = useMemo(() => ({ session, ui, act, toast, focus, urgent, quit }), [session, ui, act, toast, focus, urgent, quit]);
 
   // mount the map and start the loop
   useEffect(() => {
@@ -104,15 +124,31 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
     if (!mounted) return;
     const sim = session.sim;
     let last = 0;
+    // where a selected vehicle came from, so the selection can fall back there when it finishes its run
+    let lastVehicle: { id: number; depot: string | null } | null = null;
     return session.onFrame(() => {
       const now = performance.now();
-      const st = ui.get();
+      let st = ui.get();
       const r = session.renderer;
-      r.vs.selectedTrip = st.selection?.kind === 'trip' ? st.selection.id : null;
-      r.vs.selectedBuilding = st.selection?.kind === 'building' ? st.selection.idx : -1;
-      r.vs.selectedLink = st.selection?.kind === 'link' ? st.selection.idx : -1;
+      if (st.selection?.kind === 'vehicle') {
+        const v = sim.vehicles.get(st.selection.id);
+        if (v) lastVehicle = { id: v.id, depot: v.depot ?? null };
+        else {
+          const depot = lastVehicle?.id === st.selection.id && lastVehicle.depot ? sim.state.structures[lastVehicle.depot] : undefined;
+          const b = depot ? sim.wb(depot.building) : undefined;
+          ui.set({ selection: b ? { kind: 'building', idx: b.idx } : null, follow: false });
+          st = ui.get();
+        }
+      }
+      const sel = st.selection;
+      r.vs.selectedTrip = sel?.kind === 'trip' ? sel.id : null;
+      r.vs.selectedBuilding = sel?.kind === 'building' ? sel.idx : -1;
+      r.vs.selectedLink = sel?.kind === 'link' ? sel.idx : -1;
+      r.vs.selectedVehicle = sel?.kind === 'vehicle' ? sel.id : -1;
+      r.vs.follow = st.follow && sel?.kind === 'vehicle';
       r.vs.hoverBuilding = st.hover?.kind === 'building' ? st.hover.idx : -1;
       r.vs.hoverLink = st.hover?.kind === 'link' ? st.hover.idx : -1;
+      r.vs.demand = st.tool === 'parking' ? 'parking' : st.tool === 'taxi' ? 'taxi' : null;
       if (now - last < 200) return;
       last = now;
       const s = sim.state;
@@ -123,49 +159,65 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
         if (t.reason === 'taxi') needTaxi++;
         if (t.reason === 'parking') needParking++;
       }
+      const hourAgo = [...s.history].reverse().find((h) => h.t <= s.time - 60);
       ui.set((u) => ({
         tick: u.tick + 1,
         hud: {
           money: sim.me.money, rating: sim.me.rating, time: s.time, speed: s.speed, waiting, needTaxi, needParking,
           served: s.stats.served, failed: s.stats.failed, traffic: sim.congestionIndex(), active: sim.getActive().length,
+          ratingTrend: hourAgo ? sim.me.rating - hourAgo.rating : 0, fps: Math.round(session.fps),
           goals: s.goals.length, gameOver: s.gameOver, tutorial: s.tutorial, serviceLevel: s.serviceLevel, lowRating: s.lowRatingSince !== null,
         },
       }));
     });
   }, [mounted, session, ui]);
 
-  // traffic view + coverage overlays follow UI state
+  // traffic view, coverage rings, build preview tint and the reach of a lot or dealership follow UI state
   useEffect(() => {
     if (!mounted) return;
     const sim = session.sim;
-    let covKey = '';
-    return ui.subscribe(() => {
+    let covKey = '', reachKey = '';
+    const sync = () => {
       const st = ui.get();
       const r = session.renderer;
       if (r.vs.trafficView !== st.trafficView) r.setTrafficView(st.trafficView);
+      const hovered = st.hover?.kind === 'building' ? sim.world.buildings[st.hover.idx] : undefined;
+      const selB = st.tool === 'select' && st.selection?.kind === 'building' ? sim.world.buildings[st.selection.idx] : undefined;
+      const selSid = selB && sim.structureAt.get(selB.id);
+      const selSt = selSid ? sim.state.structures[selSid] : undefined;
+
       const cov: Coverage[] = [];
       const lots = () => sim.structuresOf('parking').forEach((l) => { const b = sim.wb(l.building)!; cov.push({ x: b.cx, y: b.cy, r: PARK_WALK_RADIUS, color: STRUCTURES.parking.color }); });
       if (st.tool === 'parking') lots();
       if (st.tool === 'dealership') sim.structuresOf('dealership').forEach((d) => { const b = sim.wb(d.building)!; cov.push({ x: b.cx, y: b.cy, r: dealerRadius(d.level), color: STRUCTURES.dealership.color }); });
-      if ((st.tool === 'parking' || st.tool === 'dealership') && st.hover?.kind === 'building') {
-        const b = sim.world.buildings[st.hover.idx];
-        cov.push({ x: b.cx, y: b.cy, r: st.tool === 'parking' ? PARK_WALK_RADIUS : dealerRadius(1), color: STRUCTURES[st.tool].color });
+      if ((st.tool === 'parking' || st.tool === 'dealership') && hovered) {
+        cov.push({ x: hovered.cx, y: hovered.cy, r: st.tool === 'parking' ? PARK_WALK_RADIUS : dealerRadius(1), color: STRUCTURES[st.tool].color });
       }
-      if (st.tool === 'select' && st.selection?.kind === 'building') {
-        const b = sim.world.buildings[st.selection.idx];
-        const sid = b && sim.structureAt.get(b.id);
-        const s2 = sid ? sim.state.structures[sid] : undefined;
-        if (s2 && STRUCTURES[s2.kind].radius(s2) > 0) cov.push({ x: b.cx, y: b.cy, r: STRUCTURES[s2.kind].radius(s2), color: STRUCTURES[s2.kind].color });
-      }
+      if (selB && selSt && STRUCTURES[selSt.kind].radius(selSt) > 0) cov.push({ x: selB.cx, y: selB.cy, r: STRUCTURES[selSt.kind].radius(selSt), color: STRUCTURES[selSt.kind].color });
       const key = JSON.stringify(cov.map((c) => [Math.round(c.x), Math.round(c.y), c.r]));
       if (key !== covKey) {
         covKey = key;
         r.setCoverage(cov);
       }
+
+      // customers a previewed site, or the selected lot or dealership, would serve
+      const reachKind = (st.tool === 'parking' || st.tool === 'dealership') && hovered ? st.tool
+        : selSt && selSt.kind !== 'taxi' ? selSt.kind : null;
+      const site = reachKind && (hovered && st.tool !== 'select' ? hovered : selB);
+      const level = site === selB ? selSt?.level ?? 1 : 1;
+      const rk = reachKind && site ? `${reachKind}:${site.idx}:${level}:${sim.getActive().length}` : '';
+      if (rk !== reachKey) {
+        reachKey = rk;
+        if (reachKind && site) r.view.setReach(reachOf(sim, reachKind, site, level), reachKind === 'parking' ? REACH.lot : REACH.dealer);
+        else r.view.setReach([], REACH.none);
+      }
+
       const isBuild = st.tool === 'taxi' || st.tool === 'parking' || st.tool === 'dealership';
-      if (isBuild && st.hover?.kind === 'building') r.view.setPreview(st.hover.idx, checkBuild(sim, st.tool as 'taxi', st.hover.idx).ok ? 1 : 2);
+      if (isBuild && hovered) r.view.setPreview(hovered.idx, checkBuild(sim, st.tool as 'taxi', hovered.idx).ok ? 1 : 2);
       else r.view.setPreview(-1, 0);
-    });
+    };
+    sync();
+    return ui.subscribe(sync);
   }, [mounted, session, ui]);
 
   // map pointer interactions
@@ -185,8 +237,14 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
         map.getCanvas().style.cursor = l >= 0 ? 'pointer' : '';
         return;
       }
-      const b = r.view.buildingAt(x, y);
       const bubble = r.overlay.hitBubble(x, y);
+      const veh = tool === 'select' && !bubble ? r.vehicleAt(x, y) : -1;
+      if (veh >= 0) {
+        ui.set({ hover: { kind: 'vehicle', idx: veh, x, y } });
+        map.getCanvas().style.cursor = 'pointer';
+        return;
+      }
+      const b = r.view.buildingAt(x, y);
       ui.set({ hover: b >= 0 ? { kind: 'building', idx: b, x, y } : null });
       map.getCanvas().style.cursor = b >= 0 || bubble ? 'pointer' : '';
     };
@@ -195,7 +253,7 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
       if (!raf) raf = requestAnimationFrame(hoverAt);
     };
     const onLeave = () => { pending = null; ui.set({ hover: null }); };
-    const onClick = (e: { point: { x: number; y: number } }) => {
+    const onClick = (e: { point: { x: number; y: number }; originalEvent: MouseEvent }) => {
       const { x, y } = e.point;
       const st = ui.get();
       sfx.play('click');
@@ -208,52 +266,86 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
         const b = r.view.buildingAt(x, y);
         if (b < 0) return;
         const bb = sim.world.buildings[b];
-        if (act({ type: 'build', kind: st.tool, building: bb.id }, `${STRUCTURES[st.tool].name} opened at ${bb.name}`)) {
+        // shift-click keeps the tool out for placing several in a row
+        if (act({ type: 'build', kind: st.tool, building: bb.id }, `${STRUCTURES[st.tool].name} opened at ${bb.name}`) && !e.originalEvent.shiftKey) {
           ui.set({ selection: { kind: 'building', idx: b }, tool: 'select' });
         }
         return;
       }
       const trip = r.overlay.hitBubble(x, y);
-      if (trip) { ui.set({ selection: { kind: 'trip', id: trip } }); return; }
+      if (trip) { ui.set({ selection: { kind: 'trip', id: trip }, follow: false }); return; }
+      const veh = r.vehicleAt(x, y);
+      if (veh >= 0) { ui.set({ selection: { kind: 'vehicle', id: veh }, follow: false }); return; }
       const b = r.view.buildingAt(x, y);
-      if (b >= 0) { ui.set({ selection: { kind: 'building', idx: b } }); return; }
+      if (b >= 0) { ui.set({ selection: { kind: 'building', idx: b }, follow: false }); return; }
       const l = r.view.linkAt(x, y);
-      ui.set({ selection: l >= 0 ? { kind: 'link', idx: l } : null });
+      ui.set({ selection: l >= 0 ? { kind: 'link', idx: l } : null, follow: false });
     };
     const onContext = (e: { originalEvent: MouseEvent }) => {
       e.originalEvent.preventDefault();
       if (ui.get().tool !== 'select') ui.set({ tool: 'select' });
     };
+    // grabbing the map takes the camera back from a followed vehicle
+    const onDrag = () => { if (ui.get().follow) ui.set({ follow: false }); };
     map.on('mousemove', onMove);
     map.on('click', onClick);
     map.on('contextmenu', onContext);
+    map.on('dragstart', onDrag);
     map.getCanvas().addEventListener('mouseleave', onLeave);
     return () => {
       map.off('mousemove', onMove);
       map.off('click', onClick);
       map.off('contextmenu', onContext);
+      map.off('dragstart', onDrag);
       map.getCanvas().removeEventListener('mouseleave', onLeave);
       cancelAnimationFrame(raf);
     };
   }, [mounted, session, ui, act]);
 
-  // keyboard shortcuts
+  // keyboard shortcuts, and camera keys that act for as long as they're held
   useEffect(() => {
     if (!mounted) return;
+    const map = session.renderer.view.map;
+    const held = new Set<string>();
+    let raf = 0, last = 0;
+    const fly = (t: number) => {
+      const dt = Math.min(0.05, (t - last) / 1000);
+      last = t;
+      const has = (...k: string[]) => k.some((x) => held.has(x));
+      const dx = (has('d', 'arrowright') ? 1 : 0) - (has('a', 'arrowleft') ? 1 : 0);
+      const dy = (has('s', 'arrowdown') ? 1 : 0) - (has('w', 'arrowup') ? 1 : 0);
+      const rot = (has('e') ? 1 : 0) - (has('q') ? 1 : 0);
+      const zoom = (has('=', '+') ? 1 : 0) - (has('-', '_') ? 1 : 0);
+      if (dx || dy) {
+        map.panBy([dx * 640 * dt, dy * 640 * dt], { duration: 0 });
+        if (ui.get().follow) ui.set({ follow: false });
+      }
+      if (rot) map.setBearing(map.getBearing() + rot * 75 * dt);
+      if (zoom) map.setZoom(map.getZoom() + zoom * 1.5 * dt);
+      raf = held.size ? requestAnimationFrame(fly) : 0;
+    };
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const st = ui.get();
+      const k = e.key.toLowerCase();
+      if (CAMERA_KEYS.has(k) && !st.panel) {
+        e.preventDefault();
+        held.add(k);
+        if (!raf) { last = performance.now(); raf = requestAnimationFrame(fly); }
+        return;
+      }
       const speed = session.sim.state.speed;
-      switch (e.key) {
+      switch (k) {
         case '1': ui.set({ tool: 'taxi', selection: null }); break;
         case '2': ui.set({ tool: 'parking', selection: null }); break;
         case '3': ui.set({ tool: 'dealership', selection: null }); break;
         case '4': ui.set({ tool: 'road', selection: null }); break;
-        case 'Escape':
+        case 'escape':
           if (st.panel) ui.set({ panel: null });
           else if (st.tool !== 'select') ui.set({ tool: 'select' });
-          else if (st.selection) ui.set({ selection: null });
+          else if (st.selection) ui.set({ selection: null, follow: false });
           else ui.set({ panel: 'menu' });
           break;
         case ' ':
@@ -263,14 +355,26 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
           break;
         case '.': act({ type: 'setSpeed', speed: speed === 0 ? 1 : Math.min(4, speed * 2) }); break;
         case ',': act({ type: 'setSpeed', speed: speed <= 1 ? 0 : speed / 2 }); break;
-        case 't': case 'T': ui.set({ trafficView: !st.trafficView }); break;
-        case 'g': case 'G': ui.set({ panel: st.panel === 'goals' ? null : 'goals' }); break;
+        case 't': ui.set({ trafficView: !st.trafficView }); break;
+        case 'g': ui.set({ panel: st.panel === 'goals' ? null : 'goals' }); break;
+        case 'h': { const hq = session.sim.world.buildings[session.sim.world.hq]; focus(hq.cx, hq.cy, 16.4); break; }
+        case 'n': urgent(); break;
+        case 'f': if (st.selection?.kind === 'vehicle') ui.set({ follow: !st.follow }); break;
         default: return;
       }
     };
+    const onUp = (e: KeyboardEvent) => { held.delete(e.key.toLowerCase()); };
+    const onBlur = () => held.clear();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [mounted, session, ui, act]);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+      cancelAnimationFrame(raf);
+    };
+  }, [mounted, session, ui, act, focus, urgent]);
 
   const panel = useStore(ui, (s) => s.panel);
   const paused = useStore(ui, (s) => s.hud.speed === 0 && !s.hud.gameOver);
@@ -302,6 +406,7 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
             <CityPulse />
             <Feed />
             <Tooltip />
+            <FpsChip />
             {paused && panel !== 'menu' && <div className="paused-chip">Paused · Space to resume</div>}
             {panel === 'goals' && <GoalsPanel />}
             {panel === 'stats' && <StatsPanel />}
@@ -312,4 +417,11 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
       </div>
     </GameCtx.Provider>
   );
+}
+
+function FpsChip() {
+  const { ui, session } = useGame();
+  const fps = useStore(ui, (s) => s.hud.fps);
+  if (!session.settings.showFps) return null;
+  return <div className={`fps-chip mono ${fps < 30 ? 'slow' : ''}`}>{fps} fps</div>;
 }

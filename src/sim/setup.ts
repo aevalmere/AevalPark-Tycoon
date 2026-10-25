@@ -43,7 +43,18 @@ export function snapshot(sim: Simulation): GameState {
 }
 
 const MIGRATIONS: Record<number, (s: GameState) => GameState> = {
-  // 1 → 2: add migrations here as the format grows
+  // 1 → 2: flat parking fees became hourly rates billed on exit (a typical stay is about two hours)
+  1: (s) => {
+    for (const st of Object.values(s.structures)) {
+      if (st.kind !== 'parking') continue;
+      st.fee = Math.round((st.fee ?? 8) / 2);
+      for (const p of st.parked ?? []) {
+        p.since ??= p.until - 120;
+        p.rate ??= st.fee;
+      }
+    }
+    return s;
+  },
 };
 
 export function migrate(raw: GameState): GameState {

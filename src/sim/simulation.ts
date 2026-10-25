@@ -6,8 +6,8 @@ import { clamp, pointAlong } from '../core/geo';
 import { chance, rand, randRange } from '../core/rng';
 import type { LinkPos, World, WorldBuilding } from '../world/types';
 import {
-  ACTIVATE_ON_ARRIVAL, CURB_INCIDENT, DIFFICULTY, DWELL, PARK_WALK_RADIUS, RATING, SERVICE_LEVELS, SIM_STEP, TAXI, TAXI_LOT_RADIUS, VIS_SPEED,
-  WALK_SPEED, speedFactor,
+  ACTIVATE_ON_ARRIVAL, CURB_INCIDENT, DIFFICULTY, DWELL, PARK_WALK_RADIUS, PARKING, RATING, SERVICE_LEVELS, SIM_STEP, TAXI, TAXI_LOT_RADIUS,
+  VIS_SPEED, WALK_SPEED, speedFactor,
 } from './balance';
 import { applyCommand, type Command, type CommandResult } from './commands';
 import { parkingSpaces } from './content';
@@ -32,6 +32,7 @@ export interface Vehicle {
   stopFor: number;
   trip?: string;
   depot?: string | null;
+  /** the lot a car is heading to or leaving, or a taxi's drop-off lot */
   lot?: string;
   home?: string;
   curb: boolean;
@@ -68,6 +69,10 @@ export class Simulation {
   readonly structureAt = new Map<string, string>();
   readonly lotReserved = new Map<string, number>();
   readonly tripsFrom = new Map<string, number>();
+  /** recent drivers who found no parking, by destination building (fades over time) */
+  readonly parkDemand = new Map<string, number>();
+  /** recent riders who found no taxi, by origin building (fades over time) */
+  readonly taxiDemand = new Map<string, number>();
   /** links NPC traffic may start or end on */
   readonly npcLinks: number[];
   /** render interpolation between the last two ticks */
@@ -175,6 +180,13 @@ export class Simulation {
     let n = 0;
     for (const v of this.vehicles.values()) if (v.kind === 'taxi' && v.depot === depot) n++;
     return n;
+  }
+
+  /** taxis out on the road, per depot, in one pass */
+  taxisOutAll(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const v of this.vehicles.values()) if (v.kind === 'taxi' && v.depot) out.set(v.depot, (out.get(v.depot) ?? 0) + 1);
+    return out;
   }
 
   // ---------- main loop ----------
@@ -332,18 +344,21 @@ export class Simulation {
         if (!trip) return;
         if (!lot) { this.failTrip(trip, 'parking'); return; }
         const lotB = this.wb(lot.building)!, dest = this.wb(trip.dest)!;
+        const rate = lot.fee ?? 0;
         lot.parked ??= [];
-        lot.parked.push({ home: trip.origin, until: s.time + randRange(s.rng, DWELL.min, DWELL.max), color: v.color });
-        const fee = lot.fee ?? 0;
-        lot.revenue += fee;
+        lot.parked.push({ home: trip.origin, dest: trip.dest, since: s.time, until: s.time + randRange(s.rng, DWELL.min, DWELL.max), rate, color: v.color });
         const walk = Math.hypot(lotB.cx - dest.cx, lotB.cy - dest.cy);
         this.walk(lotB.cx, lotB.cy, dest.cx, dest.cy, v.color);
-        const price = fee === 0 ? -0.15 : (Math.max(0, fee - 6) / 20) * 1.3;
-        this.completeTrip(trip, 'car', s.time - (trip.departedAt ?? s.time), walk, price, fee, lotB, false);
+        // the bill comes when they leave; the posted rate is what they judge you on now
+        const price = rate === 0 ? -0.15 : (Math.max(0, rate - PARKING.fairRate) / 10) * 1.3;
+        this.completeTrip(trip, 'car', s.time - (trip.departedAt ?? s.time), walk, price, 0, lotB, false);
         return;
       }
       case 'toPickup': {
         v.stopFor = TAXI.pickupStop;
+        // the rider comes down to the kerb while the taxi waits
+        const o = v.trip ? this.wb(s.trips[v.trip]?.origin ?? '') : undefined;
+        if (o) this.walk(o.cx, o.cy, v.x, v.y, 0x334155, TAXI.pickupStop);
         return;
       }
       case 'toDrop': {
@@ -422,7 +437,8 @@ export class Simulation {
       const d = Math.hypot(b.cx - dest.cx, b.cy - dest.cy);
       if (d > radius) continue;
       if (needSpace && this.lotFree(s) <= 0) continue;
-      const score = d + (needSpace ? (s.fee ?? 0) * 8 : 0);
+      // drivers weigh a couple of hours at the posted rate against the walk
+      const score = d + (needSpace ? (s.fee ?? 0) * 16 : 0);
       if (score < bestScore) { bestScore = score; best = s; }
     }
     return best;
@@ -430,10 +446,15 @@ export class Simulation {
 
   // ---------- trips ----------
 
-  walk(x0: number, y0: number, x1: number, y1: number, color: number) {
+  walk(x0: number, y0: number, x1: number, y1: number, color: number, dur?: number) {
     const d = Math.hypot(x1 - x0, y1 - y0);
     if (d < 3) return;
-    this.walkers.push({ x0, y0, x1, y1, t: 0, dur: d / WALK_SPEED, color });
+    this.walkers.push({ x0, y0, x1, y1, t: 0, dur: dur ?? d / WALK_SPEED, color });
+  }
+
+  /** remember unmet demand at a building so build previews can point at it */
+  noteDemand(map: Map<string, number>, building: string, amount = 1) {
+    map.set(building, (map.get(building) ?? 0) + amount);
   }
 
   removeTrip(trip: Trip) {
@@ -460,6 +481,8 @@ export class Simulation {
     s.stats.served++;
     s.stats.today.served++;
     if (mode === 'car') s.stats.carTrips++; else s.stats.taxiTrips++;
+    // a driver who had to take a cab still wanted somewhere to park
+    if (mode === 'taxi' && trip.hasCar) this.noteDemand(this.parkDemand, trip.dest, 0.5);
     if (amount > 0) this.earn(amount);
     this.removeTrip(trip);
     // a satisfied destination joins the network and starts sending its own riders
@@ -473,6 +496,8 @@ export class Simulation {
     this.rate(RATING.failScore);
     s.stats.failed++;
     s.stats.today.failed++;
+    if (reason === 'parking') this.noteDemand(this.parkDemand, trip.dest);
+    else if (reason === 'taxi') this.noteDemand(this.taxiDemand, trip.origin);
     this.removeTrip(trip);
     for (const v of this.vehicles.values()) {
       if (v.trip !== trip.id) continue;

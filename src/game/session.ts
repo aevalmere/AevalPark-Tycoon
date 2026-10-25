@@ -26,6 +26,8 @@ export class GameSession {
   transport: Transport;
   settings: Settings = loadSettings();
   offline = false;
+  /** smoothed frames per second, for the optional readout */
+  fps = 60;
   private raf = 0;
   private last = 0;
   private lastSave = Date.now();
@@ -64,7 +66,7 @@ export class GameSession {
    */
   async mount(wrapper: HTMLElement, mapEl: HTMLElement): Promise<boolean> {
     const gen = ++this.gen;
-    const renderer = new GameRenderer(this.sim, this.settings.mapStyle);
+    const renderer = new GameRenderer(this.sim, this.settings.mapStyle, this.settings.graphics);
     renderer.dayNight = this.settings.dayNight;
     try {
       await renderer.mount(wrapper, mapEl);
@@ -80,8 +82,10 @@ export class GameSession {
     this.last = performance.now();
     const loop = (t: number) => {
       if (gen !== this.gen) return;
-      const dt = Math.min(0.1, (t - this.last) / 1000);
+      const raw = (t - this.last) / 1000;
+      const dt = Math.min(0.1, raw);
       this.last = t;
+      if (raw > 0) this.fps += (1 / raw - this.fps) * 0.05;
       this.sim.frame(dt);
       this.renderer.update();
       this.maybeAutosave();
@@ -115,7 +119,10 @@ export class GameSession {
     this.settings = s;
     sfx.enabled = s.sound;
     sfx.volume = s.volume;
-    if (this.renderer) this.renderer.dayNight = s.dayNight;
+    if (this.renderer) {
+      this.renderer.dayNight = s.dayNight;
+      this.renderer.setGraphics(s.graphics);
+    }
   }
 
   private maybeAutosave() {

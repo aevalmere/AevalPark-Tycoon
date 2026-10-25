@@ -1,6 +1,6 @@
-// Low-poly models assembled from boxes. Everything is in metres in the car's
-// own frame (x forward, y left, z up) and scaled by `s` so cars stay legible
-// when zoomed out.
+// Low-poly models assembled from boxes. Everything is in metres in the model's
+// own frame (x forward, y left, z up); cars are scaled by `s` so they stay
+// legible when zoomed out.
 
 import { INSTANCE_FLOATS } from './ModelLayer';
 
@@ -68,4 +68,56 @@ export function pushPerson(out: InstanceBuffer, shadow: InstanceBuffer, x: numbe
   shadow.push(x, y, z + 0.03, h, 0.9 * s, 0.9 * s, 0.02, 0x000000, 0.2);
   out.push(x, y, z, h, 0.42 * s, 0.55 * s, 1.15 * s, color);
   out.push(x, y, z + 1.18 * s, h, 0.36 * s, 0.36 * s, 0.36 * s, SKIN);
+}
+
+/** A flat glowing plate under a vehicle, so the ones tied to a selection stand out. */
+export function pushHalo(decals: InstanceBuffer, x: number, y: number, z: number, h: number, s: number, color: number, pulse: number) {
+  decals.push(x, y, z + 0.05, h, (6.4 + pulse * 1.2) * s, (3.4 + pulse * 0.8) * s, 0.02, color, 0.32 + 0.25 * (1 - pulse), 1);
+  decals.push(x, y, z + 0.06, h, 5.4 * s, 2.6 * s, 0.02, color, 0.55, 1);
+}
+
+/** A painted stall divider on a lot deck. */
+export function pushStallLine(out: InstanceBuffer, x: number, y: number, z: number, h: number, color: number) {
+  out.push(x, y, z + 0.01, h, 4.6, 0.12, 0.02, color);
+}
+
+/** Box placed by its own centre and heading, sitting on z. */
+export interface Footprint { x: number; y: number; h: number; len: number; wid: number }
+
+/** A two-storey dispatch office with a lit TAXI sign on the roof. */
+export function pushDepotOffice(out: InstanceBuffer, shadow: InstanceBuffer, f: Footprint, z: number, lights: boolean) {
+  shadow.push(f.x, f.y, z + 0.02, f.h, f.len + 1.2, f.wid + 1.2, 0.02, 0x000000, 0.18);
+  out.push(f.x, f.y, z, f.h, f.len, f.wid, 5.6, 0xece3cf);
+  out.push(f.x, f.y, z + 5.6, f.h, f.len + 0.3, f.wid + 0.3, 0.35, 0x4b5160);
+  // a band of windows on each storey
+  for (const fz of [1.4, 4.1]) out.push(f.x, f.y, z + fz, f.h, f.len + 0.06, f.wid + 0.06, 0.9, 0x31405a, 1, lights ? 0.8 : 0);
+  out.push(f.x, f.y, z + 5.95, f.h, Math.min(f.len * 0.7, 6), 0.35, 1.2, 0xf5b82e, 1, lights ? 1 : 0.25);
+}
+
+/** A glass showroom: frame and roof are solid, walls go to the glass pass so the cars inside show. */
+export function pushShowroom(out: InstanceBuffer, glass: InstanceBuffer, shadow: InstanceBuffer, f: Footprint, z: number, lights: boolean) {
+  const c = Math.cos(f.h), sn = Math.sin(f.h);
+  const at = (fx: number, fy: number): [number, number] => [f.x + c * fx - sn * fy, f.y + sn * fx + c * fy];
+  shadow.push(f.x, f.y, z + 0.02, f.h, f.len + 1.4, f.wid + 1.4, 0.02, 0x000000, 0.16);
+  out.push(f.x, f.y, z, f.h, f.len, f.wid, 0.15, 0xdfe5ea);
+  out.push(f.x, f.y, z + 5.2, f.h, f.len + 0.6, f.wid + 0.6, 0.45, 0xf4f6f8);
+  out.push(f.x, f.y, z + 5.65, f.h, f.len * 0.9, 0.3, 0.7, 0x22c7a9, 1, lights ? 1 : 0.3);
+  for (const [fx, fy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
+    const [px, py] = at(fx * (f.len / 2 - 0.15), fy * (f.wid / 2 - 0.15));
+    out.push(px, py, z, f.h, 0.3, 0.3, 5.2, 0x9aa5b1);
+  }
+  glass.push(f.x, f.y, z + 0.15, f.h, f.len - 0.1, f.wid - 0.1, 5.05, lights ? 0xffe6b0 : 0xbfe3f0, lights ? 0.42 : 0.3, lights ? 0.6 : 0);
+}
+
+/** A pay booth facing the street (heading h) with a barrier arm beside it, and a P sign on a pole. */
+export function pushLotEntrance(out: InstanceBuffer, x: number, y: number, z: number, h: number, lights: boolean) {
+  const c = Math.cos(h), sn = Math.sin(h);
+  out.push(x, y, z, h, 1.8, 1.6, 2.5, 0xe5e7eb);
+  out.push(x, y, z + 2.5, h, 2.1, 1.9, 0.18, 0x4f8cff);
+  // the arm reaches across the entry lane on the booth's left
+  out.push(x - sn * 2.6, y + c * 2.6, z + 1.0, h + Math.PI / 2, 3.4, 0.12, 0.12, 0xf8fafc);
+  // the sign stands on its right
+  const px = x + sn * 1.6, py = y - c * 1.6;
+  out.push(px, py, z, h, 0.16, 0.16, 4.6, 0x6b7280);
+  out.push(px, py, z + 4.2, h, 0.2, 1.4, 1.4, 0x4f8cff, 1, lights ? 1 : 0.15);
 }

@@ -6,7 +6,7 @@ import { useStore } from '../store';
 import { useGame } from './context';
 
 export function CityPulse() {
-  const { ui, session } = useGame();
+  const { ui, session, urgent } = useGame();
   const hud = useStore(ui, (s) => s.hud);
   useStore(ui, (s) => s.tick);
   const [open, setOpen] = useState(true);
@@ -29,7 +29,9 @@ export function CityPulse() {
           <TrafficChart values={values} />
           <div className="pulse-axis"><span>24 h ago</span><span>now</span></div>
           <div className="pulse-grid">
-            <div><b className="mono">{hud.waiting}</b><span>waiting</span></div>
+            <button type="button" className="pulse-jump" title="Jump to the rider closest to giving up (N)" onClick={urgent} disabled={!hud.waiting}>
+              <b className="mono">{hud.waiting}</b><span>waiting <kbd>N</kbd></span>
+            </button>
             <div title="Waiting for a free taxi"><b className="mono" style={{ color: hud.needTaxi ? '#f5b82e' : undefined }}>{hud.needTaxi}</b><span><Icon.Taxi size={11} /> need taxi</span></div>
             <div title="Drivers with no free parking near their destination"><b className="mono" style={{ color: hud.needParking ? '#4f8cff' : undefined }}>{hud.needParking}</b><span><Icon.Parking size={11} /> need parking</span></div>
             <div><b className="mono">{t.served}</b><span>served today</span></div>

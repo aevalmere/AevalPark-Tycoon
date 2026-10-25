@@ -48,14 +48,32 @@ export interface LoadedStyle {
   ok: boolean;
 }
 
+// The menu, the HQ picker and the game all start from the same style; fetch it once per page.
+const fetched = new Map<MapStyle, Promise<StyleSpecification>>();
+
+function fetchStyle(kind: MapStyle): Promise<StyleSpecification> {
+  let p = fetched.get(kind);
+  if (!p) {
+    p = (async () => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 10000);
+      try {
+        const res = await fetch(URLS[kind], { signal: ctl.signal });
+        if (!res.ok) throw new Error(`style ${res.status}`);
+        return (await res.json()) as StyleSpecification;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    p.catch(() => fetched.delete(kind));
+    fetched.set(kind, p);
+  }
+  return p;
+}
+
 export async function loadBaseStyle(kind: MapStyle): Promise<LoadedStyle> {
   try {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 10000);
-    const res = await fetch(URLS[kind], { signal: ctl.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`style ${res.status}`);
-    const style: StyleSpecification = await res.json();
+    const style = structuredClone(await fetchStyle(kind));
     const pal = PALETTE[kind];
     style.layers = style.layers.filter((l) => {
       const sl = (l as { 'source-layer'?: string })['source-layer'];
@@ -89,6 +107,19 @@ export function visualHeight(h: number) {
   return h <= 18 ? h : 18 + (h - 18) * 0.38;
 }
 
+// ---------- structure shapes (shared by the extrusions and the 3D models) ----------
+
+/** paving height of a taxi yard or dealer forecourt */
+export const YARD_HEIGHT = 0.3;
+/** a surface lot's slab, and each garage deck above it */
+export const LOT_BASE = 0.6;
+export const DECK_HEIGHT = 3.2;
+
+/** Height parked cars sit at on a structure: the top deck of a garage, or the paving of a yard. */
+export function deckZ(kind: 'parking' | 'taxi' | 'dealership', level: number) {
+  return kind === 'parking' ? LOT_BASE + (level - 1) * DECK_HEIGHT : YARD_HEIGHT;
+}
+
 // ---------- game palette (shared by 3D layers and UI) ----------
 
 export const COLORS = {
@@ -98,11 +129,15 @@ export const COLORS = {
   hq: '#e8a33d',
   lot: '#5d6776',
   garage: '#8fa3c7',
-  dealer: '#2fc4a6',
-  taxi: '#f5b82e',
+  /** forecourt and yard paving, so the showroom and cabs on them read as objects */
+  dealer: '#3aa58f',
+  taxi: '#c99a3a',
   valid: '#7fdca5',
   invalid: '#f08f8f',
   select: '#fff1c2',
+  /** customers a selected lot or dealership reaches */
+  reachLot: '#9cc0ff',
+  reachDealer: '#8fe3cf',
 };
 
 export const DARK_COLORS: typeof COLORS = {
