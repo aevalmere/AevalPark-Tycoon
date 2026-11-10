@@ -8,11 +8,19 @@
     <meta name="description" content="A parking and transport tycoon played on the real map around you." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <link rel="preload" href="./menu-hero.jpg" as="image" fetchpriority="high" />
+    <link rel="preload" href="https://tiles.openfreemap.org/styles/dark" as="fetch" crossorigin />
+    <!-- painted before any script runs: the home screen's backdrop and its shade -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0e15; }
+      #boot { position: fixed; inset: 0; background: #0a0e15 url(./menu-hero.jpg) center / auto 100% no-repeat; }
+      #boot::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(8, 11, 17, 0.96) 0%, rgba(8, 11, 17, 0.82) 30%, rgba(8, 11, 17, 0.25) 62%, rgba(8, 11, 17, 0.05) 100%); }
+    </style>
     <link rel="preload" href="./fonts/hanken-grotesk.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="./fonts/geist-mono.woff2" as="font" type="font/woff2" crossorigin />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div id="boot"></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

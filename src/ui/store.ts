@@ -65,6 +65,13 @@ export interface Hud {
   lowRating: boolean;
 }
 
+export interface Banner {
+  id: number;
+  kind: 'goal' | 'day' | 'expand' | 'streak';
+  title: string;
+  sub: string;
+}
+
 export type Panel = null | 'goals' | 'stats' | 'menu' | 'settings' | 'help';
 
 export interface GameUi {
@@ -77,6 +84,10 @@ export interface GameUi {
   /** camera rides along with the selected vehicle */
   follow: boolean;
   hud: Hud;
+  /** riders served in a row without losing one */
+  streak: number;
+  /** a big moment announced across the middle of the screen */
+  banner: Banner | null;
   /** bumps a few times a second so detail panels re-read the simulation */
   tick: number;
 }

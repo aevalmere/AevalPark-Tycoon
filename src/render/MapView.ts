@@ -4,7 +4,7 @@
 import { Map as MlMap, type ExpressionSpecification, type GeoJSONSource } from 'maplibre-gl';
 import './maplibre';
 import type { World } from '../world/types';
-import { COLORS, DARK_COLORS, DECK_HEIGHT, LOT_BASE, TRAFFIC_STOPS, YARD_HEIGHT, loadBaseStyle, visualHeight, type MapStyle } from './style';
+import { COLORS, DARK_COLORS, DECK_HEIGHT, LOT_BASE, TRAFFIC_STOPS, YARD_HEIGHT, buildingColors, loadBaseStyle, visualHeight, type MapStyle } from './style';
 
 export const ROLE = { none: 0, active: 1, hq: 2, lot: 3, dealer: 4, taxi: 5, outside: 6 } as const;
 /** feature-state `reach`: customers a selected (or previewed) lot or dealership serves */
@@ -14,6 +14,8 @@ export interface MapQuality {
   /** canvas pixels per CSS pixel */
   pixelRatio: number;
   antialias: boolean;
+  /** separate roof colours: one more extrusion layer */
+  roofs: boolean;
 }
 
 const SRC_B = 'apt-buildings';
@@ -81,7 +83,7 @@ export class MapView {
       bearing: -18,
       minZoom: 14,
       maxZoom: 19.5,
-      maxPitch: 70,
+      maxPitch: 74,
       maxBounds: [sw, ne],
       attributionControl: { compact: true },
       canvasContextAttributes: { antialias: quality.antialias },
@@ -96,10 +98,10 @@ export class MapView {
       this.map.once('load', () => { clearTimeout(timer); resolve(); });
     });
     if (this.destroyed) return;
-    this.addLayers(base.labelBefore, mapStyle, serviceRadius);
+    this.addLayers(base.labelBefore, mapStyle, serviceRadius, quality.roofs);
   }
 
-  private addLayers(labelBefore: string | undefined, mapStyle: MapStyle, serviceRadius: number) {
+  private addLayers(labelBefore: string | undefined, mapStyle: MapStyle, serviceRadius: number, roofs: boolean) {
     const map = this.map, w = this.world;
     const C = mapStyle === 'dark' ? DARK_COLORS : COLORS;
 
@@ -111,7 +113,8 @@ export class MapView {
         out.push(out[0]);
         return out;
       });
-      return { type: 'Feature' as const, id: b.idx, properties: { h: visualHeight(b.height), b: visualHeight(b.minHeight) }, geometry: { type: 'Polygon' as const, coordinates: rings } };
+      const col = buildingColors(b.idx, b.kind, b.height, mapStyle);
+      return { type: 'Feature' as const, id: b.idx, properties: { h: visualHeight(b.height), b: visualHeight(b.minHeight), c: col.wall, co: col.wallOut, r: col.roof, ro: col.roofOut }, geometry: { type: 'Polygon' as const, coordinates: rings } };
     });
     map.addSource(SRC_B, { type: 'geojson', data: { type: 'FeatureCollection', features } });
 
@@ -180,40 +183,58 @@ export class MapView {
     // ---- 3D buildings, coloured by game role ----
     const role: ExpressionSpecification = ['coalesce', ['feature-state', 'role'], 0];
     const lvl: ExpressionSpecification = ['coalesce', ['feature-state', 'lvl'], 1];
-    const baseColor: ExpressionSpecification = ['match', role,
-      ROLE.active, C.active,
-      ROLE.hq, C.hq,
-      ROLE.lot, ['case', ['>', lvl, 1], C.garage, C.lot],
-      ROLE.dealer, C.dealer,
-      ROLE.taxi, C.taxi,
-      ROLE.outside, C.outside,
-      C.inactive];
     const prev: ExpressionSpecification = ['coalesce', ['feature-state', 'prev'], 0];
     const reach: ExpressionSpecification = ['coalesce', ['feature-state', 'reach'], 0];
-    const tinted: ExpressionSpecification = ['match', reach,
-      REACH.lot, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachLot],
-      REACH.dealer, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachDealer],
-      baseColor];
+    const paint = (plain: ExpressionSpecification, outside: ExpressionSpecification, active: string, hq: string): ExpressionSpecification => {
+      const baseColor: ExpressionSpecification = ['match', role,
+        ROLE.active, active,
+        ROLE.hq, hq,
+        ROLE.lot, ['case', ['>', lvl, 1], C.garage, C.lot],
+        ROLE.dealer, C.dealer,
+        ROLE.taxi, C.taxi,
+        ROLE.outside, outside,
+        plain];
+      const tinted: ExpressionSpecification = ['match', reach,
+        REACH.lot, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachLot],
+        REACH.dealer, ['interpolate', ['linear'], 0.55, 0, baseColor, 1, COLORS.reachDealer],
+        baseColor];
+      return ['case',
+        ['==', prev, 1], C.valid,
+        ['==', prev, 2], C.invalid,
+        ['interpolate', ['linear'],
+          ['case', ['boolean', ['feature-state', 'sel'], false], 0.45, ['boolean', ['feature-state', 'hover'], false], 0.28, 0],
+          0, tinted, 1, '#ffffff']];
+    };
+    const structure: ExpressionSpecification = ['match', role, ROLE.lot, true, ROLE.taxi, true, ROLE.dealer, true, false];
     map.addLayer({
       id: 'apt-buildings', type: 'fill-extrusion', source: SRC_B,
       paint: {
-        'fill-extrusion-color': ['case',
-          ['==', prev, 1], C.valid,
-          ['==', prev, 2], C.invalid,
-          ['interpolate', ['linear'],
-            ['case', ['boolean', ['feature-state', 'sel'], false], 0.45, ['boolean', ['feature-state', 'hover'], false], 0.28, 0],
-            0, tinted, 1, '#ffffff']],
+        'fill-extrusion-color': paint(['to-color', ['get', 'c']], ['to-color', ['get', 'co']], C.active, C.hq),
         // lots grow a deck per level; depots and dealerships are paved yards with their buildings drawn as models
         'fill-extrusion-height': ['match', role,
           ROLE.lot, ['+', LOT_BASE, ['*', ['-', lvl, 1], DECK_HEIGHT]],
           ROLE.taxi, YARD_HEIGHT,
           ROLE.dealer, YARD_HEIGHT,
           ['get', 'h']],
-        'fill-extrusion-base': ['match', role, ROLE.lot, 0, ROLE.taxi, 0, ROLE.dealer, 0, ['get', 'b']],
-        'fill-extrusion-opacity': 0.96,
+        'fill-extrusion-base': ['case', structure, 0, ['get', 'b']],
+        // fully opaque: anything less makes MapLibre draw every building twice
+        'fill-extrusion-opacity': 1,
         'fill-extrusion-vertical-gradient': true,
       },
     });
+    if (roofs) {
+      // a thin cap in the roof colour; structures (lots, yards) keep theirs flat on the ground
+      map.addLayer({
+        id: 'apt-roofs', type: 'fill-extrusion', source: SRC_B,
+        paint: {
+          'fill-extrusion-color': paint(['to-color', ['get', 'r']], ['to-color', ['get', 'ro']], C.activeRoof, C.hqRoof),
+          'fill-extrusion-height': ['case', structure, 0, ['+', ['get', 'h'], 0.4]],
+          'fill-extrusion-base': ['case', structure, 0, ['get', 'h']],
+          'fill-extrusion-opacity': 1,
+          'fill-extrusion-vertical-gradient': false,
+        },
+      });
+    }
     map.addLayer({
       id: 'apt-service-ring', type: 'line', source: SRC_AREA, filter: ['==', ['get', 'k'], 'ring'],
       paint: { 'line-color': '#e8a33d', 'line-width': 2.5, 'line-dasharray': [3, 2], 'line-opacity': 0.85 },
@@ -322,7 +343,8 @@ export class MapView {
     this.map.setPaintProperty('apt-traffic', 'line-opacity', on
       ? ['case', ['boolean', ['feature-state', 'hl'], false], 1, 0.95]
       : ['case', ['boolean', ['feature-state', 'hl'], false], 1, ['interpolate', ['linear'], t, 0, 0.32, 0.25, 0.55, 0.5, 0.9]]);
-    this.map.setPaintProperty('apt-buildings', 'fill-extrusion-opacity', on ? 0.55 : 0.96);
+    this.map.setPaintProperty('apt-buildings', 'fill-extrusion-opacity', on ? 0.55 : 1);
+    if (this.map.getLayer('apt-roofs')) this.map.setLayoutProperty('apt-roofs', 'visibility', on ? 'none' : 'visible');
     const k = on ? 1.9 : 1;
     this.map.setPaintProperty('apt-traffic', 'line-width', ['interpolate', ['exponential', 1.5], ['zoom'],
       14, ['case', ['==', ['get', 'ow'], 1], 1.6 * k, 1.1 * k],
@@ -364,6 +386,11 @@ export class MapView {
 
   setLight(intensity: number, color: string, azimuth: number, polar: number) {
     this.map.setLight({ anchor: 'map', intensity, color, position: [1.15, azimuth, polar] });
+  }
+
+  /** what shows above the horizon when the camera is tipped right over */
+  setSky(sky: string, horizon: string) {
+    this.map.setSky({ 'sky-color': sky, 'horizon-color': horizon, 'fog-color': horizon, 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.85 });
   }
 
   get alive() {

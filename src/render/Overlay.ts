@@ -61,6 +61,21 @@ export interface Ping {
   life: number;
 }
 
+/** A coin or scrap of confetti, in screen pixels: it flies, falls and fades. */
+interface Particle {
+  x: number; y: number;
+  vx: number; vy: number;
+  size: number;
+  color: string;
+  born: number;
+  life: number;
+  /** confetti tumbles; coins stay round */
+  spin: number;
+}
+
+const CONFETTI = ['#e8a33d', '#f2c979', '#4f8cff', '#22c7a9', '#ef6b6b', '#ffffff'];
+const PARTICLE_LIMIT = 260;
+
 export interface BubbleHit {
   trip: string;
   x: number;
@@ -87,6 +102,8 @@ export class Overlay {
   floats: FloatText[] = [];
   pings: Ping[] = [];
   hits: BubbleHit[] = [];
+  private particles: Particle[] = [];
+  private lastFx = 0;
   dark = false;
   private sprites = new Map<string, Sprite>();
 
@@ -120,7 +137,7 @@ export class Overlay {
 
   /** anything still animating on its own (the renderer keeps repainting while true) */
   busy(now: number) {
-    return this.floats.some((f) => now - f.born < f.life) || this.pings.some((p) => now - p.born < p.life);
+    return this.particles.length > 0 || this.floats.some((f) => now - f.born < f.life) || this.pings.some((p) => now - p.born < p.life);
   }
 
   project(x: number, y: number, z: number): [number, number] | null {
@@ -419,18 +436,67 @@ export class Overlay {
     this.ctx.globalAlpha = 1;
   }
 
-  /** floating texts and pings; `now` in real seconds */
+  /** Coins popping out of a point in the world. */
+  burst(x: number, y: number, z: number, color: string, n: number, now: number) {
+    const p = this.project(x, y, z);
+    if (!p || this.particles.length > PARTICLE_LIMIT) return;
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.4, v = 70 + Math.random() * 130;
+      this.particles.push({ x: p[0], y: p[1] - 18, vx: Math.cos(a) * v, vy: Math.sin(a) * v, size: 2.2 + Math.random() * 2, color, born: now, life: 0.7 + Math.random() * 0.5, spin: 0 });
+    }
+  }
+
+  /** A shower from the top of the screen for the big moments. */
+  confetti(now: number, n: number) {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (let i = 0; i < n && this.particles.length < PARTICLE_LIMIT; i++) {
+      this.particles.push({
+        x: this.w * (0.15 + Math.random() * 0.7), y: -10 - Math.random() * 60,
+        vx: (Math.random() - 0.5) * 220, vy: 60 + Math.random() * 180,
+        size: 4 + Math.random() * 4, color: CONFETTI[i % CONFETTI.length], born: now + Math.random() * 0.35, life: 2 + Math.random() * 1.2, spin: 4 + Math.random() * 8,
+      });
+    }
+  }
+
+  /** floating texts, pings and particles; `now` in real seconds */
   effects(now: number) {
     const c = this.ctx;
+    const dt = Math.min(0.05, Math.max(0, now - this.lastFx));
+    this.lastFx = now;
+    if (this.particles.length) {
+      this.particles = this.particles.filter((p) => now - p.born < p.life && p.y < this.h + 20);
+      for (const p of this.particles) {
+        const age = now - p.born;
+        if (age < 0) continue;
+        p.vy += (p.spin ? 260 : 520) * dt;
+        if (p.spin) p.vx *= 1 - 1.2 * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        const k = age / p.life;
+        c.globalAlpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
+        c.fillStyle = p.color;
+        if (p.spin) {
+          const w = p.size * Math.abs(Math.cos(age * p.spin)) + 1;
+          c.fillRect(p.x - w / 2, p.y - p.size / 2, w, p.size * 1.3);
+        } else {
+          c.beginPath(); c.arc(p.x, p.y, p.size, 0, Math.PI * 2); c.fill();
+        }
+      }
+      c.globalAlpha = 1;
+    }
     if (this.pings.length) this.pings = this.pings.filter((p) => now - p.born < p.life);
     for (const p of this.pings) {
       const k = (now - p.born) / p.life;
       const s = this.project(p.x, p.y, 1);
       if (!s) continue;
+      const e = 1 - (1 - k) * (1 - k);
       c.strokeStyle = p.color;
       c.globalAlpha = 1 - k;
-      c.lineWidth = 3;
-      c.beginPath(); c.arc(s[0], s[1], 8 + k * 46, 0, Math.PI * 2); c.stroke();
+      c.lineWidth = 3.5 * (1 - k) + 1;
+      c.beginPath(); c.arc(s[0], s[1], 8 + e * 52, 0, Math.PI * 2); c.stroke();
+      c.globalAlpha = (1 - k) * 0.5;
+      c.lineWidth = 2;
+      c.beginPath(); c.arc(s[0], s[1], 4 + e * 30, 0, Math.PI * 2); c.stroke();
       c.globalAlpha = 1;
     }
     if (this.floats.length) this.floats = this.floats.filter((f) => now - f.born < f.life);
@@ -440,8 +506,10 @@ export class Overlay {
       const k = (now - f.born) / f.life;
       const s = this.project(f.x, f.y, f.z);
       if (!s) continue;
-      const y = s[1] - (f.small ? 14 : 26) - k * (f.small ? 22 : 34);
-      c.font = f.small ? '750 11px "Hanken Grotesk", system-ui, sans-serif' : '800 13px "Hanken Grotesk", system-ui, sans-serif';
+      const y = s[1] - (f.small ? 14 : 26) - (1 - (1 - k) * (1 - k)) * (f.small ? 24 : 44);
+      // pops in a little oversized, then settles
+      const pop = k < 0.12 ? 0.6 + (k / 0.12) * 0.65 : k < 0.22 ? 1.25 - ((k - 0.12) / 0.1) * 0.25 : 1;
+      c.font = f.small ? `750 ${(11 * pop).toFixed(1)}px "Hanken Grotesk", system-ui, sans-serif` : `800 ${(15 * pop).toFixed(1)}px "Hanken Grotesk", system-ui, sans-serif`;
       c.globalAlpha = (k < 0.75 ? 1 : 1 - (k - 0.75) / 0.25) * (f.small ? 0.85 : 1);
       c.lineWidth = 3.5;
       c.strokeStyle = this.dark ? 'rgba(10,14,22,0.9)' : 'rgba(255,255,255,0.95)';

@@ -12,25 +12,35 @@ const URLS: Record<MapStyle, string> = {
 };
 
 type Paint = Record<string, unknown>;
+// Ground the colour of real pavement and asphalt, so buildings and cars stand on something.
 const PALETTE: Record<MapStyle, Record<string, Paint>> = {
   light: {
-    background: { 'background-color': '#eef0e9' },
-    park: { 'fill-color': '#d6e7cc' },
-    landuse_park: { 'fill-color': '#d6e7cc' },
-    landcover_wood: { 'fill-color': '#cfe2c4', 'fill-opacity': 0.8 },
-    water: { 'fill-color': '#a8cde4' },
-    landuse_residential: { 'fill-color': '#ebe8e0' },
-    building: { 'fill-color': '#e0dcd2', 'fill-outline-color': '#d3cec3' },
-    highway_minor: { 'line-color': '#ffffff' },
-    highway_major_inner: { 'line-color': '#ffffff' },
-    highway_major_casing: { 'line-color': '#d4d7dc' },
-    highway_major_subtle: { 'line-color': '#e6e6e2' },
+    background: { 'background-color': '#e6e3d8' },
+    park: { 'fill-color': '#b9dba0' },
+    landuse_park: { 'fill-color': '#b9dba0' },
+    landcover_wood: { 'fill-color': '#a3cf8f', 'fill-opacity': 0.9 },
+    water: { 'fill-color': '#86c1e6' },
+    waterway: { 'line-color': '#86c1e6' },
+    landuse_residential: { 'fill-color': '#e9e5d9' },
+    building: { 'fill-color': '#d9d4c8', 'fill-outline-color': '#cbc5b8' },
+    highway_path: { 'line-color': '#f3efe4' },
+    highway_minor: { 'line-color': '#c5cad1' },
+    highway_major_inner: { 'line-color': '#b4bac3' },
+    highway_major_casing: { 'line-color': '#f4f1e8' },
+    highway_major_subtle: { 'line-color': '#b4bac3' },
+    highway_motorway_inner: { 'line-color': '#a4abb6' },
+    highway_motorway_casing: { 'line-color': '#f4f1e8' },
+    highway_motorway_subtle: { 'line-color': '#a4abb6' },
+    highway_motorway_bridge_inner: { 'line-color': '#a4abb6' },
+    road_area_pier: { 'fill-color': '#ddd8cb' },
+    road_pier: { 'line-color': '#ddd8cb' },
   },
   dark: {
     background: { 'background-color': '#10151d' },
-    water: { 'fill-color': '#182838' },
-    landuse_park: { 'fill-color': '#132018' },
-    landcover_wood: { 'fill-color': '#132018' },
+    water: { 'fill-color': '#15304a' },
+    park: { 'fill-color': '#15281b' },
+    landuse_park: { 'fill-color': '#15281b' },
+    landcover_wood: { 'fill-color': '#15281b' },
     landuse_residential: { 'fill-color': '#131921' },
     building: { 'fill-color': '#1a212b' },
     highway_minor: { 'line-color': '#2a3242' },
@@ -107,6 +117,46 @@ export function visualHeight(h: number) {
   return h <= 18 ? h : 18 + (h - 18) * 0.38;
 }
 
+// ---------- building colours ----------
+// No textures: a city reads as real when its walls and roofs vary. Each kind
+// of building draws from its own small palette, picked by a stable hash.
+
+const WALLS: Record<string, string[]> = {
+  house: ['#ead9c4', '#e2c7ae', '#d7b49c', '#efe6d6', '#d2bfad', '#c9a48d'],
+  apartment: ['#e3d6c6', '#d6c8ba', '#e7ded1', '#ccc0b3', '#dccdb8', '#c7b3a2'],
+  office: ['#c9d6e3', '#b9cbdd', '#e3d8c6', '#d9c7b0', '#d9e0e6', '#c9b29c', '#e8e2d6', '#bda592', '#cfd4d9', '#d6b9a4'],
+  shop: ['#eedfc8', '#e7d0bd', '#e3dcc6', '#f0e4d2', '#dccbbb'],
+  food: ['#eedfc8', '#e9cdb6', '#e3dcc6', '#f0e4d2'],
+  civic: ['#e9e3d3', '#ddd6c4', '#e4dccb'],
+  leisure: ['#e6dcc8', '#dfe3d0'],
+  hotel: ['#e4d6c8', '#d5c5b9', '#cfd6df'],
+  industrial: ['#d5d3cc', '#c9c8c2', '#cfc6ba'],
+};
+const ROOFS: Record<string, string[]> = {
+  house: ['#a8654e', '#8f5b4b', '#7b6b63', '#9b7a66', '#6f7780'],
+  apartment: ['#9c9a94', '#8a8f96', '#a8a39a', '#93867c'],
+  office: ['#9aa3ad', '#b3b0a8', '#8b96a3', '#a79f95', '#c2beb5', '#8f8a86'],
+  shop: ['#a39686', '#8f8a84', '#b0a090'],
+  food: ['#a39686', '#9a6f5c', '#b0a090'],
+  civic: ['#7f9a8c', '#94a39a', '#8c8f95'],
+  leisure: ['#9aa58c', '#a39d90'],
+  hotel: ['#8e8680', '#7e8792'],
+  industrial: ['#8f949a', '#9d9a92'],
+};
+
+export interface BuildingColors { wall: string; roof: string; wallOut: string; roofOut: string }
+
+export function buildingColors(idx: number, kind: string, height: number, mapStyle: MapStyle): BuildingColors {
+  const h = Math.imul(idx + 1, 2654435761) >>> 0;
+  // towers read as glass and steel whatever they hold
+  const k = height > 45 && kind !== 'house' ? 'office' : kind;
+  const walls = WALLS[k] ?? WALLS.apartment, roofs = ROOFS[k] ?? ROOFS.apartment;
+  let wall = walls[h % walls.length], roof = roofs[(h >>> 8) % roofs.length];
+  if (mapStyle === 'dark') { wall = mixHex(wall, '#1b2330', 0.74); roof = mixHex(roof, '#141a24', 0.7); }
+  const dim = mapStyle === 'dark' ? '#171c24' : '#d3d2cd';
+  return { wall, roof, wallOut: mixHex(wall, dim, 0.62), roofOut: mixHex(roof, dim, 0.55) };
+}
+
 // ---------- structure shapes (shared by the extrusions and the 3D models) ----------
 
 /** paving height of a taxi yard or dealer forecourt */
@@ -125,7 +175,9 @@ export function deckZ(kind: 'parking' | 'taxi' | 'dealership', level: number) {
 export const COLORS = {
   inactive: '#f2eee6',
   outside: '#dcd8d0',
-  active: '#f4c27f',
+  active: '#f6b85c',
+  activeRoof: '#fbd699',
+  hqRoof: '#f4c063',
   hq: '#e8a33d',
   lot: '#5d6776',
   garage: '#8fa3c7',
@@ -145,6 +197,8 @@ export const DARK_COLORS: typeof COLORS = {
   inactive: '#3a4250',
   outside: '#2a303a',
   active: '#c98d45',
+  activeRoof: '#dba25a',
+  hqRoof: '#f0b455',
 };
 
 /** traffic ramp, 0 = free flowing, 1 = gridlock */
@@ -167,7 +221,7 @@ export function trafficColor(t: number): string {
   return TRAFFIC_STOPS[TRAFFIC_STOPS.length - 1][1];
 }
 
-function mixHex(a: string, b: string, t: number): string {
+export function mixHex(a: string, b: string, t: number): string {
   const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
   const ch = (s: number) => Math.round(((pa >> s) & 255) + (((pb >> s) & 255) - ((pa >> s) & 255)) * t);
   return '#' + ((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0');

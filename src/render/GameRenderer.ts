@@ -12,7 +12,8 @@ import type { Simulation, Vehicle } from '../sim/simulation';
 import { hourOf, type Structure } from '../sim/state';
 import { layoutFor, type Layout } from './layout';
 import { MapView, ROLE, type Coverage, type MapQuality } from './MapView';
-import { ModelLayer } from './ModelLayer';
+import { ModelLayer, TintLayer } from './ModelLayer';
+import { buildProps, buildWindows } from './scenery';
 import { InstanceBuffer, pushCar, pushDepotOffice, pushHalo, pushLotEntrance, pushPerson, pushShowroom, pushStallLine } from './models';
 import { Overlay, type Glyph } from './Overlay';
 import { YARD_HEIGHT, deckZ, visualHeight, type MapStyle } from './style';
@@ -36,10 +37,24 @@ export interface ViewState {
   follow: boolean;
 }
 
+/** Chromebook-class hardware: few cores or little memory. Multisampling is the first thing it can't afford. */
+const WEAK = (navigator.hardwareConcurrency ?? 8) <= 4 || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
+
 export function mapQuality(g: Graphics): MapQuality {
   const dpr = window.devicePixelRatio || 1;
-  return { pixelRatio: g === 'high' ? dpr : g === 'balanced' ? Math.min(dpr, 1.5) : 1, antialias: g !== 'low' };
+  return {
+    pixelRatio: g === 'high' ? dpr : g === 'balanced' ? Math.min(dpr, 1.5) : 1,
+    antialias: g === 'high' || (g === 'balanced' && !WEAK),
+    roofs: g !== 'low',
+  };
 }
+
+type Rgb = [number, number, number];
+const mix3 = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const css3 = (c: Rgb) => `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
+
+/** A burst of light on the ground or a roof: something was built, or a building joined the network. */
+interface Flash { x: number; y: number; z: number; r0: number; r1: number; color: number; born: number; life: number }
 
 function lerpAngle(a: number, b: number, t: number) {
   let d = b - a;
@@ -71,6 +86,11 @@ export class GameRenderer {
   private solids = new InstanceBuffer();
   private shadows = new InstanceBuffer();
   private glass = new InstanceBuffer();
+  private glows = new InstanceBuffer();
+  private windows = new InstanceBuffer();
+  private windowsAt = { x: 1e9, y: 1e9, r: 0 };
+  private flashes: Flash[] = [];
+  private ground = new TintLayer('apt-ground-tint');
   /** contact shadows go here instead on low graphics, and are never drawn */
   private sink = new InstanceBuffer();
   private layouts = new Map<string, Layout>();
@@ -80,10 +100,16 @@ export class GameRenderer {
   private lastRoles = 0;
   private rolesDirty = true;
   private lastLight = -1;
-  private tintOpacity = '';
   private unsub: () => void;
   private mapStyle: MapStyle;
-  private tint!: HTMLElement;
+  // adaptive resolution
+  private resScale = 1;
+  private resCeiling = 1;
+  private frameAt = 0;
+  private frameSum = 0;
+  private frameN = 0;
+  private resAt = 0;
+  private resRaised = 0;
 
   constructor(private sim: Simulation, mapStyle: MapStyle, graphics: Graphics) {
     this.view = new MapView(sim.world);
@@ -95,14 +121,19 @@ export class GameRenderer {
   async mount(wrapper: HTMLElement, mapEl: HTMLElement) {
     await this.view.mount(mapEl, this.mapStyle, this.sim.serviceRadius(), mapQuality(this.graphics));
     if (!this.view.alive) return;
-    this.tint = document.createElement('div');
-    this.tint.className = 'night-tint';
-    wrapper.appendChild(this.tint);
     this.overlay = new Overlay(wrapper);
     this.overlay.dark = this.mapStyle === 'dark';
     this.overlay.maxDpr = mapQuality(this.graphics).pixelRatio;
     this.layer = new ModelLayer('apt-models', this.sim.world.proj, (l) => this.drawFrame(l));
+    this.view.map.addLayer(this.ground, 'apt-fog');
     this.view.map.addLayer(this.layer);
+    if (this.graphics !== 'low') {
+      const props = buildProps(this.sim.world);
+      this.layer.propSolids.set(props.solids.data, props.solids.n);
+      this.layer.propLights.set(props.lights.data, props.lights.n);
+      this.layer.propPools.set(props.pools.data, props.pools.n);
+    }
+    this.resAt = performance.now() + 5000;
     this.syncRoles();
     this.view.updateTraffic(this.sim.traffic);
     const hq = this.sim.world.buildings[this.sim.world.hq];
@@ -113,6 +144,8 @@ export class GameRenderer {
   setGraphics(g: Graphics) {
     this.graphics = g;
     const q = mapQuality(g);
+    this.resScale = this.resCeiling = 1;
+    this.lastLight = -1;
     this.view.setPixelRatio(q.pixelRatio);
     if (this.overlay) this.overlay.maxDpr = q.pixelRatio;
   }
@@ -131,7 +164,10 @@ export class GameRenderer {
         this.tripBorn.set(e.trip, now);
         break;
       case 'trip:done':
-        if (e.amount > 0) fl(e.x, e.y, e.z, `+$${e.amount.toLocaleString('en-US')}`, e.score >= 3 ? '#16a34a' : '#d97706');
+        if (e.amount > 0) {
+          fl(e.x, e.y, e.z, `+$${e.amount.toLocaleString('en-US')}`, e.score >= 3 ? '#16a34a' : '#d97706');
+          this.overlay.burst(e.x, e.y, visualHeight(e.z), '#f5c451', e.score >= 4 ? 7 : 4, now);
+        }
         this.tripBorn.delete(e.trip);
         break;
       case 'trip:fail':
@@ -144,10 +180,12 @@ export class GameRenderer {
         break;
       case 'sale':
         fl(e.x, e.y, e.z, `car sold +$${e.amount.toLocaleString('en-US')}`, '#0d9488', 2);
+        this.overlay.burst(e.x, e.y, visualHeight(e.z), '#2dd4bf', 14, now);
         break;
       case 'activate': {
         const b = this.sim.world.buildings[e.building];
         this.overlay.pings.push({ x: b.cx, y: b.cy, color: GOLD, born: now, life: 1.2 });
+        this.flashes.push({ x: b.cx, y: b.cy, z: visualHeight(b.height) + 0.8, r0: 6, r1: 14 + Math.sqrt(b.area) * 1.6, color: 0xffd27a, born: now, life: 1.3 });
         this.rolesDirty = true;
         break;
       }
@@ -156,7 +194,10 @@ export class GameRenderer {
         const def = STRUCTURES[e.kind];
         this.overlay.pings.push({ x: b.cx, y: b.cy, color: def.color, born: now, life: 1.4 });
         fl(b.cx, b.cy, 8, `${def.name} open`, def.color, 2.2);
+        this.flashes.push({ x: b.cx, y: b.cy, z: 0.5, r0: 10, r1: 120, color: hex(def.color), born: now, life: 1.1 });
+        this.overlay.burst(b.cx, b.cy, 6, def.color, 18, now);
         this.rolesDirty = true;
+        this.windowsAt.r = 0;
         break;
       }
       case 'incident':
@@ -166,11 +207,21 @@ export class GameRenderer {
         this.layouts.delete(e.structure);
         this.rolesDirty = true;
         break;
-      case 'upgraded':
+      case 'upgraded': {
+        const st = this.sim.state.structures[e.structure], b = st && this.sim.wb(st.building);
+        if (b) {
+          this.flashes.push({ x: b.cx, y: b.cy, z: 0.5, r0: 8, r1: 80, color: hex(STRUCTURES[st.kind].color), born: now, life: 0.9 });
+          this.overlay.burst(b.cx, b.cy, 6, STRUCTURES[st.kind].color, 12, now);
+        }
         this.rolesDirty = true;
+        break;
+      }
+      case 'goal':
+        this.overlay.confetti(now, 90);
         break;
       case 'expand':
         this.view.setServiceRadius(e.radius);
+        this.overlay.confetti(now, 60);
         this.rolesDirty = true;
         break;
       default:
@@ -199,6 +250,7 @@ export class GameRenderer {
   /** Per animation frame, after the simulation has stepped. */
   update() {
     const t = this.now(), s = this.sim.state, v = this.vs;
+    this.adaptResolution();
     if (this.rolesDirty || t - this.lastRoles > 1.5) { this.syncRoles(); this.lastRoles = t; }
     if (t - this.lastTraffic > 0.35) { this.view.updateTraffic(this.sim.traffic); this.lastTraffic = t; }
     this.updateLight();
@@ -212,7 +264,7 @@ export class GameRenderer {
     }
     // a paused city with nothing selected doesn't need redrawing; camera moves still repaint on their own
     const live = (s.speed > 0 && !s.gameOver) || this.overlay.busy(t) || v.selectedBuilding >= 0 || v.selectedVehicle >= 0
-      || !!v.selectedTrip || !!v.demand || s.incidents.length > 0;
+      || !!v.selectedTrip || !!v.demand || s.incidents.length > 0 || this.flashes.length > 0;
     if (live) this.view.map.triggerRepaint();
   }
 
@@ -226,25 +278,66 @@ export class GameRenderer {
     this.view.setTrafficView(on);
   }
 
+  /**
+   * Trade resolution for frame rate. If frames run long, the map renders at
+   * fewer pixels and is scaled up; once there's headroom it creeps back. A
+   * level that had to be given up again becomes the ceiling, so it never yo-yos.
+   */
+  private adaptResolution() {
+    const now = performance.now(), dt = now - this.frameAt;
+    this.frameAt = now;
+    if (now < this.resAt || dt > 250 || document.hidden) return;
+    this.frameSum += dt;
+    this.frameN++;
+    if (this.frameSum < 1500) return;
+    const avg = this.frameSum / this.frameN;
+    this.frameSum = this.frameN = 0;
+    let next = this.resScale;
+    if (avg > 23 && next > 0.55) {
+      if (now - this.resRaised < 12000) this.resCeiling = Math.min(this.resCeiling, next - 0.05);
+      next = Math.max(0.55, next - (avg > 34 ? 0.2 : 0.1));
+    } else if (avg < 17.6 && next < this.resCeiling - 0.01 && now - this.resAt > 8000) {
+      next = Math.min(this.resCeiling, next + 0.05);
+      this.resRaised = now;
+    } else return;
+    this.resScale = next;
+    this.resAt = now;
+    this.view.setPixelRatio(mapQuality(this.graphics).pixelRatio * next);
+  }
+
   private updateLight() {
+    const dark = this.mapStyle === 'dark';
     const hour = this.dayNight ? hourOf(this.sim.state.time) : 13;
     const elev = Math.sin(((hour - 6) / 12) * Math.PI); // 1 at noon, <0 at night
-    this.night = clamp((0.25 - elev) / 0.45, 0, 1);
-    const op = (this.night * (this.mapStyle === 'dark' ? 0.3 : 0.5)).toFixed(3);
-    if (op !== this.tintOpacity) { this.tint.style.opacity = op; this.tintOpacity = op; }
-    const key = Math.round(hour * 4);
-    if (key === this.lastLight) return;
-    this.lastLight = key;
-    const az = 90 + ((hour - 6) / 12) * 180; // east in the morning, west in the evening
-    const dusk = clamp(1 - Math.abs(elev) / 0.35, 0, 1);
-    const color = this.night > 0.6 ? '#9fb4ff' : dusk > 0.3 ? '#ffc08a' : '#ffffff';
-    this.view.setLight(0.32 + 0.2 * (1 - this.night), color, az, clamp(90 - Math.max(0, elev) * 65, 20, 80));
-    const a = (az * Math.PI) / 180, el = Math.max(0.2, elev);
-    this.layer.lighting = {
-      sun: [Math.sin(a) * Math.cos(el), Math.cos(a) * Math.cos(el), Math.sin(el)],
-      ambient: 0.5 + 0.18 * (1 - this.night),
-      diffuse: 0.48 * (1 - this.night * 0.6),
-    };
+    const night = this.night = clamp((0.22 - elev) / 0.42, 0, 1);
+    const key = Math.round(hour * 12) + (this.graphics === 'low' ? 1000 : 0);
+    if (key !== this.lastLight) {
+      this.lastLight = key;
+      const az = 90 + ((hour - 6) / 12) * 180; // east in the morning, west in the evening
+      const dusk = clamp(1 - Math.abs(elev - 0.08) / 0.3, 0, 1) * (1 - night);
+      // light on the buildings: white at noon, amber at the ends of the day, moonlit blue at night
+      const sun = mix3(mix3([1, 1, 1], [1, 0.84, 0.68], dusk * 0.55), [0.5, 0.57, 0.86], night);
+      this.view.setLight(0.4 - 0.1 * night, css3(sun), az, clamp(90 - Math.max(0, elev) * 62, 22, 80));
+      // the ground takes the same light as a multiply
+      this.ground.mul = mix3(mix3([1, 1, 1], [1, 0.92, 0.84], dusk * 0.5), dark ? [0.72, 0.76, 0.9] : [0.4, 0.46, 0.7], night);
+      const sky = mix3(mix3([0.5, 0.74, 0.96], [0.93, 0.6, 0.42], dusk), [0.03, 0.05, 0.12], night);
+      const horizon = dark ? mix3([0.1, 0.13, 0.19], [0.05, 0.07, 0.13], night)
+        : mix3(mix3([0.87, 0.93, 0.98], [1, 0.8, 0.62], dusk), [0.1, 0.13, 0.25], night);
+      this.view.setSky(css3(sky), css3(horizon));
+      const a = (az * Math.PI) / 180, el = Math.max(0.2, elev);
+      this.layer.lighting = {
+        sun: [Math.sin(a) * Math.cos(el), Math.cos(a) * Math.cos(el), Math.sin(el)],
+        ambient: 0.5 + 0.18 * (1 - night),
+        diffuse: 0.5 * (1 - night * 0.6),
+        tint: mix3(sun, [1, 1, 1], 0.25),
+      };
+      this.layer.haze = [horizon[0], horizon[1], horizon[2], 0];
+    }
+    // haze thickens as the camera tips toward the horizon
+    const low = this.graphics === 'low';
+    this.layer.night = night;
+    this.layer.haze[3] = low ? 0 : clamp((this.view.map.getPitch() - 40) / 32, 0, 1) * (dark ? 0.4 : 0.42);
+    this.layer.vignette = low ? 0 : 0.2 + 0.12 * night;
   }
 
   private layout(st: Structure): Layout {
@@ -314,16 +407,43 @@ export class GameRenderer {
     const t = this.now();
     const lights = this.night > 0.35;
     const low = this.graphics === 'low';
-    const { solids, glass } = this;
+    const { solids, glass, glows } = this;
     const decals = this.shadows, shadows = low ? this.sink : this.shadows;
     solids.reset();
     decals.reset();
     glass.reset();
+    glows.reset();
     this.sink.reset();
     this.out = sim.taxisOutAll();
     const rel = this.related();
     const relRgb = hex(rel.color);
     const pulse = (t * 1.2) % 1;
+    layer.props = zoom >= 15.3 && !low;
+
+    // lit windows near the camera, rebuilt only once it has travelled
+    if (this.night > 0.02 && !low && zoom >= 14.8) {
+      const c = this.view.map.getCenter();
+      const [cx, cy] = sim.world.proj.toLocal(c.lat, c.lng);
+      const r = clamp(430 * Math.pow(2, 16.2 - zoom), 300, 900), at = this.windowsAt;
+      if (Math.hypot(cx - at.x, cy - at.y) > at.r * 0.3 || Math.abs(r - at.r) > at.r * 0.25) {
+        this.windowsAt = { x: cx, y: cy, r };
+        buildWindows(sim.world, cx, cy, r, this.windows, 9000, (i) => sim.structureAt.has(sim.world.buildings[i].id));
+        layer.windows.set(this.windows.data, this.windows.n);
+      }
+    } else if (layer.windows.n) {
+      layer.windows.set(this.windows.data, 0);
+      this.windowsAt.r = 0;
+    }
+
+    // bursts of light where something just happened
+    if (this.flashes.length) {
+      this.flashes = this.flashes.filter((f) => t - f.born < f.life);
+      for (const f of this.flashes) {
+        const k = (t - f.born) / f.life, e = 1 - (1 - k) * (1 - k);
+        const r = f.r0 + (f.r1 - f.r0) * e;
+        decals.push(f.x, f.y, f.z, 0, r * 2, r * 2, 0.02, f.color, 0.85 * (1 - k), 1);
+      }
+    }
 
     // moving vehicles (interpolated between the last two sim ticks)
     for (const v of sim.vehicles.values()) {
@@ -335,6 +455,8 @@ export class GameRenderer {
       pushCar(solids, shadows, lx, ly, 0, h, k, v.kind === 'taxi' ? TAXI_COLOR : v.color, {
         taxi: v.kind === 'taxi', lights, braking: v.stopFor > 0 || v.speed < 6,
       });
+      // headlights throw a pool of light down the road
+      if (lights && !low) glows.push(lx + Math.cos(h) * 7.5 * k, ly + Math.sin(h) * 7.5 * k, 0.14, h, 15 * k, 8.5 * k, 0.02, 0xffe9b4, 0.5, 1);
     }
 
     // structures: lots with their stalls and booth, taxi yards with an office, dealer forecourts with a showroom
@@ -371,9 +493,12 @@ export class GameRenderer {
       const x = p.x0 + (p.x1 - p.x0) * k, y = p.y0 + (p.y1 - p.y0) * k;
       pushPerson(solids, shadows, x, y, 0, Math.atan2(p.y1 - p.y0, p.x1 - p.x0), scale * 1.25, p.color);
     }
-    layer.setInstances(solids.data, solids.n, decals.data, decals.n, glass.data, glass.n);
+    layer.solids.set(solids.data, solids.n);
+    layer.decals.set(decals.data, decals.n);
+    layer.glass.set(glass.data, glass.n);
+    layer.glows.set(glows.data, glows.n);
 
-    if (layer.matrix) this.drawOverlay(layer.matrix, zoom, scale, lights && !low, rel, t);
+    if (layer.matrix) this.drawOverlay(layer.matrix, zoom, scale, rel, t);
   }
 
   private routePoints(v: Vehicle): number[] {
@@ -391,15 +516,9 @@ export class GameRenderer {
     return pts;
   }
 
-  private drawOverlay(m: Float64Array, zoom: number, scale: number, glows: boolean, rel: { ids: Set<number>; color: string }, now: number) {
+  private drawOverlay(m: Float64Array, zoom: number, scale: number, rel: { ids: Set<number>; color: string }, now: number) {
     const sim = this.sim, s = sim.state, w = sim.world, o = this.overlay, v = this.vs;
     o.begin(m);
-
-    if (glows) {
-      o.beginGlow();
-      for (const x of sim.vehicles.values()) o.headlight(x.x + Math.sin(x.h) * x.lane * scale, x.y - Math.cos(x.h) * x.lane * scale, x.h, scale, this.night);
-      o.endGlow();
-    }
 
     if (v.demand) this.drawDemand(v.demand, zoom);
 
@@ -517,7 +636,6 @@ export class GameRenderer {
   destroy() {
     this.unsub();
     this.overlay?.destroy();
-    this.tint?.remove();
     this.view.destroy();
   }
 }

@@ -48,7 +48,7 @@ export function pushCar(out: InstanceBuffer, shadow: InstanceBuffer, x: number, 
   const c = Math.cos(h), sn = Math.sin(h);
   // offset along the car's own axes
   const at = (fx: number, fy: number): [number, number] => [x + (c * fx - sn * fy) * s, y + (sn * fx + c * fy) * s];
-  shadow.push(x, y, z + 0.03, h, 4.9 * s, 2.3 * s, 0.02, 0x000000, 0.22);
+  shadow.push(x, y, z + 0.03, h, 6.6 * s, 3.6 * s, 0.02, 0x000000, 0.42);
   out.push(x, y, z, h, 4.1 * s, 1.92 * s, 0.42 * s, TYRE);
   out.push(x, y, z + 0.3 * s, h, 4.4 * s, 1.86 * s, 0.68 * s, color);
   const [cx, cy] = at(-0.3, 0);
@@ -65,15 +65,15 @@ export function pushCar(out: InstanceBuffer, shadow: InstanceBuffer, x: number, 
 }
 
 export function pushPerson(out: InstanceBuffer, shadow: InstanceBuffer, x: number, y: number, z: number, h: number, s: number, color: number) {
-  shadow.push(x, y, z + 0.03, h, 0.9 * s, 0.9 * s, 0.02, 0x000000, 0.2);
+  shadow.push(x, y, z + 0.03, h, 1.7 * s, 1.7 * s, 0.02, 0x000000, 0.34);
   out.push(x, y, z, h, 0.42 * s, 0.55 * s, 1.15 * s, color);
   out.push(x, y, z + 1.18 * s, h, 0.36 * s, 0.36 * s, 0.36 * s, SKIN);
 }
 
 /** A flat glowing plate under a vehicle, so the ones tied to a selection stand out. */
 export function pushHalo(decals: InstanceBuffer, x: number, y: number, z: number, h: number, s: number, color: number, pulse: number) {
-  decals.push(x, y, z + 0.05, h, (6.4 + pulse * 1.2) * s, (3.4 + pulse * 0.8) * s, 0.02, color, 0.32 + 0.25 * (1 - pulse), 1);
-  decals.push(x, y, z + 0.06, h, 5.4 * s, 2.6 * s, 0.02, color, 0.55, 1);
+  decals.push(x, y, z + 0.05, h, (10 + pulse * 3) * s, (7 + pulse * 3) * s, 0.02, color, 0.5 + 0.3 * (1 - pulse), 1);
+  decals.push(x, y, z + 0.06, h, 7 * s, 4.2 * s, 0.02, color, 0.8, 1);
 }
 
 /** A painted stall divider on a lot deck. */
@@ -86,7 +86,7 @@ export interface Footprint { x: number; y: number; h: number; len: number; wid: 
 
 /** A two-storey dispatch office with a lit TAXI sign on the roof. */
 export function pushDepotOffice(out: InstanceBuffer, shadow: InstanceBuffer, f: Footprint, z: number, lights: boolean) {
-  shadow.push(f.x, f.y, z + 0.02, f.h, f.len + 1.2, f.wid + 1.2, 0.02, 0x000000, 0.18);
+  shadow.push(f.x, f.y, z + 0.02, f.h, f.len * 1.5 + 3, f.wid * 1.5 + 3, 0.02, 0x000000, 0.34);
   out.push(f.x, f.y, z, f.h, f.len, f.wid, 5.6, 0xece3cf);
   out.push(f.x, f.y, z + 5.6, f.h, f.len + 0.3, f.wid + 0.3, 0.35, 0x4b5160);
   // a band of windows on each storey
@@ -98,7 +98,7 @@ export function pushDepotOffice(out: InstanceBuffer, shadow: InstanceBuffer, f: 
 export function pushShowroom(out: InstanceBuffer, glass: InstanceBuffer, shadow: InstanceBuffer, f: Footprint, z: number, lights: boolean) {
   const c = Math.cos(f.h), sn = Math.sin(f.h);
   const at = (fx: number, fy: number): [number, number] => [f.x + c * fx - sn * fy, f.y + sn * fx + c * fy];
-  shadow.push(f.x, f.y, z + 0.02, f.h, f.len + 1.4, f.wid + 1.4, 0.02, 0x000000, 0.16);
+  shadow.push(f.x, f.y, z + 0.02, f.h, f.len * 1.5 + 3, f.wid * 1.5 + 3, 0.02, 0x000000, 0.3);
   out.push(f.x, f.y, z, f.h, f.len, f.wid, 0.15, 0xdfe5ea);
   out.push(f.x, f.y, z + 5.2, f.h, f.len + 0.6, f.wid + 0.6, 0.45, 0xf4f6f8);
   out.push(f.x, f.y, z + 5.65, f.h, f.len * 0.9, 0.3, 0.7, 0x22c7a9, 1, lights ? 1 : 0.3);

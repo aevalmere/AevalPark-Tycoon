@@ -9,6 +9,7 @@ import { STRUCTURES, dealerRadius } from '../../sim/content';
 import { money } from '../format';
 import { Icon } from '../icons';
 import { createStore, emptyHud, type GameUi, type Toast } from '../store';
+import { Banner, GoalChip } from '../hud/Rewards';
 import { CityPulse } from '../hud/CityPulse';
 import { GameCtx, useGame, type GameCtxValue } from '../hud/context';
 import { Feed } from '../hud/Feed';
@@ -22,6 +23,9 @@ import { useStore } from '../store';
 
 let toastId = 1;
 
+/** streak lengths worth stopping the music for */
+const STREAK_MARKS = new Set([10, 25, 50, 100, 250, 500, 1000]);
+
 /** keys that move the camera while held */
 const CAMERA_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'q', 'e', '=', '+', '-', '_']);
 
@@ -32,7 +36,7 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
   const [mountErr, setMountErr] = useState<string | null>(null);
   const lastSpeed = useRef(1);
   const ui = useMemo(() => createStore<GameUi>({
-    tool: 'select', selection: null, hover: null, toasts: [], panel: null, trafficView: false, follow: false, hud: emptyHud, tick: 0,
+    tool: 'select', selection: null, hover: null, toasts: [], panel: null, trafficView: false, follow: false, hud: emptyHud, tick: 0, streak: 0, banner: null,
   }), []);
 
   const toast = useCallback((level: Toast['level'], text: string, focus?: Toast['focus']) => {
@@ -86,12 +90,29 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
   // simulation events → toasts and sound
   useEffect(() => {
     const sim = session.sim;
-    let lastFail = 0;
+    let lastFail = 0, lastCoin = 0, run = 0;
+    const banner = (kind: 'goal' | 'day' | 'expand' | 'streak', title: string, sub: string) => ui.set({ banner: { id: toastId++, kind, title, sub } });
     return sim.events.on((e) => {
       switch (e.type) {
-        case 'trip:done': sfx.play('coin'); break;
+        case 'trip:done': {
+          // fares that land close together climb in pitch
+          const now = Date.now();
+          run = now - lastCoin < 5000 ? run + 1 : 0;
+          lastCoin = now;
+          sfx.play('coin', run);
+          const streak = ui.get().streak + 1;
+          ui.set({ streak });
+          if (STREAK_MARKS.has(streak)) {
+            sfx.play('streak');
+            banner('streak', `${streak} in a row`, 'Every rider delivered. Nobody left waiting.');
+            session.renderer?.overlay?.confetti(performance.now() / 1000, 40);
+          }
+          break;
+        }
+        case 'activate': sfx.play('pop'); break;
         case 'trip:fail': {
           sfx.play('fail');
+          if (ui.get().streak) ui.set({ streak: 0 });
           const now = Date.now();
           if (now - lastFail > 5000) {
             lastFail = now;
@@ -104,13 +125,13 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
         case 'upgraded': sfx.play('build'); break;
         case 'goal':
           sfx.play('goal');
-          toast('good', `Goal: ${e.goal.title}${e.goal.reward ? ` · +$${e.goal.reward.toLocaleString()}` : ''}`);
+          banner('goal', e.goal.title, e.goal.reward ? `Goal complete · +$${e.goal.reward.toLocaleString()}` : 'Goal complete');
           break;
-        case 'expand': sfx.play('goal'); break;
+        case 'expand': sfx.play('goal'); banner('expand', 'New territory', `Your service area now reaches ${e.radius} m.`); break;
         case 'notice': if (e.level === 'bad') sfx.play('alert'); toast(e.level, e.text, e.focus); break;
         case 'day': {
           const d = sim.state.days[sim.state.days.length - 1];
-          if (d) toast('info', `Day ${e.day}. Yesterday: ${d.served} trips, ${money(Math.abs(d.revenue - d.expenses))} ${d.revenue >= d.expenses ? 'profit' : 'loss'}.`);
+          if (d) banner('day', `Day ${e.day}`, `Yesterday: ${d.served} trips, ${money(Math.abs(d.revenue - d.expenses))} ${d.revenue >= d.expenses ? 'profit' : 'loss'}`);
           break;
         }
         case 'gameover': sfx.play('alert'); break;
@@ -399,6 +420,8 @@ export function GameScreen({ session, onQuit }: { session: GameSession; onQuit: 
         {mounted && (
           <div className="hud">
             <TopBar />
+            <GoalChip />
+            <Banner />
             <Toolbar />
             <ToolHint />
             <Inspector />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SERVICE_LEVELS } from '../../sim/balance';
 import { GOALS, STRUCTURES } from '../../sim/content';
 import { hourOf } from '../../sim/state';
@@ -21,9 +21,33 @@ function MoneyCounter({ value }: { value: number }) {
     const t = setTimeout(() => setDelta(null), 1400);
     return () => clearTimeout(t);
   }, [delta]);
+  // the figure rolls to its new value instead of jumping
+  const el = useRef<HTMLSpanElement>(null);
+  const shown = useRef(value);
+  useEffect(() => {
+    const from = shown.current, start = performance.now();
+    if (Math.abs(value - from) < 1 || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      shown.current = value;
+      if (el.current) el.current.textContent = money(value);
+      return;
+    }
+    // income gives the figure a little kick
+    if (value > from) el.current?.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.14)', color: '#86efac' }, { transform: 'scale(1)' }], { duration: 450, easing: 'ease-out' });
+    let raf = 0;
+    const step = (t: number) => {
+      const k = Math.min(1, (t - start) / 420), e = 1 - Math.pow(1 - k, 3);
+      shown.current = from + (value - from) * e;
+      if (el.current) el.current.textContent = money(shown.current);
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+  // the text is written by the tween, never by React, so a re-render can't fight it
+  useLayoutEffect(() => { if (el.current) el.current.textContent = money(shown.current); });
   return (
     <div className={`money ${value < 0 ? 'neg' : ''}`}>
-      <span className="money-value mono">{money(value)}</span>
+      <span ref={el} className="money-value mono" />
       {delta && <span key={delta.k} className={`money-delta mono ${delta.v > 0 ? 'up' : 'down'}`}>{delta.v > 0 ? '+' : '−'}{compactMoney(Math.abs(delta.v))}</span>}
     </div>
   );

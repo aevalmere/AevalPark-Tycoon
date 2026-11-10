@@ -94,22 +94,27 @@ export interface GoalDef {
   detail: string;
   reward: number;
   check(s: GameState): boolean;
+  /** how far along, as [now, target], for the HUD's next-goal bar */
+  progress?(s: GameState): [number, number];
 }
 
 const count = (s: GameState, kind: StructureKind) => Object.values(s.structures).filter((x) => x.kind === kind).length;
 const me = (s: GameState) => s.companies[s.localPlayer];
+const taxis = (s: GameState) => Object.values(s.structures).reduce((n, x) => n + (x.taxis ?? 0), 0);
+const network = (s: GameState) => Object.values(s.buildings).filter((b) => b.active).length;
+const topLot = (s: GameState) => Object.values(s.structures).reduce((n, x) => (x.kind === 'parking' ? Math.max(n, x.level) : n), 0);
 
 export const GOALS: GoalDef[] = [
   { id: 'first_ride', title: 'First fare', detail: 'Get someone where they were going.', reward: 1500, check: (s) => s.stats.served >= 1 },
   { id: 'lot', title: 'Room to park', detail: 'Convert a building into a parking lot.', reward: 1200, check: (s) => count(s, 'parking') >= 1 },
-  { id: 'served_25', title: 'Getting around', detail: 'Complete 25 trips.', reward: 3000, check: (s) => s.stats.served >= 25 },
+  { id: 'served_25', title: 'Getting around', detail: 'Complete 25 trips.', reward: 3000, check: (s) => s.stats.served >= 25, progress: (s) => [s.stats.served, 25] },
   { id: 'dealer', title: 'Showroom floor', detail: 'Open a car dealership.', reward: 2500, check: (s) => count(s, 'dealership') >= 1 },
-  { id: 'fleet_5', title: 'Fleet owner', detail: 'Own 5 taxis.', reward: 3500, check: (s) => Object.values(s.structures).reduce((n, x) => n + (x.taxis ?? 0), 0) >= 5 },
-  { id: 'rating_4', title: 'Four stars', detail: 'Reach a 4.0 rating.', reward: 5000, check: (s) => me(s).rating >= 4 },
+  { id: 'fleet_5', title: 'Fleet owner', detail: 'Own 5 taxis.', reward: 3500, check: (s) => taxis(s) >= 5, progress: (s) => [taxis(s), 5] },
+  { id: 'rating_4', title: 'Four stars', detail: 'Reach a 4.0 rating.', reward: 5000, check: (s) => me(s).rating >= 4, progress: (s) => [me(s).rating, 4] },
   { id: 'expand', title: 'New territory', detail: 'Expand your service area.', reward: 6000, check: (s) => s.serviceLevel >= 1 },
-  { id: 'garage', title: 'Going up', detail: 'Upgrade a lot to a three-level garage.', reward: 6000, check: (s) => Object.values(s.structures).some((x) => x.kind === 'parking' && x.level >= 3) },
-  { id: 'served_250', title: 'City mover', detail: 'Complete 250 trips.', reward: 12000, check: (s) => s.stats.served >= 250 },
-  { id: 'network_80', title: 'Household name', detail: 'Serve 80 buildings in your network.', reward: 15000, check: (s) => Object.values(s.buildings).filter((b) => b.active).length >= 80 },
-  { id: 'rating_48', title: 'Five-star operator', detail: 'Reach a 4.8 rating.', reward: 25000, check: (s) => me(s).rating >= 4.8 },
-  { id: 'money_250k', title: 'Parking magnate', detail: 'Bank $250,000.', reward: 0, check: (s) => me(s).money >= 250000 },
+  { id: 'garage', title: 'Going up', detail: 'Upgrade a lot to a three-level garage.', reward: 6000, check: (s) => topLot(s) >= 3, progress: (s) => [topLot(s), 3] },
+  { id: 'served_250', title: 'City mover', detail: 'Complete 250 trips.', reward: 12000, check: (s) => s.stats.served >= 250, progress: (s) => [s.stats.served, 250] },
+  { id: 'network_80', title: 'Household name', detail: 'Serve 80 buildings in your network.', reward: 15000, check: (s) => network(s) >= 80, progress: (s) => [network(s), 80] },
+  { id: 'rating_48', title: 'Five-star operator', detail: 'Reach a 4.8 rating.', reward: 25000, check: (s) => me(s).rating >= 4.8, progress: (s) => [me(s).rating, 4.8] },
+  { id: 'money_250k', title: 'Parking magnate', detail: 'Bank $250,000.', reward: 0, check: (s) => me(s).money >= 250000, progress: (s) => [Math.max(0, me(s).money), 250000] },
 ];

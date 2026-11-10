@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Map as MlMap } from 'maplibre-gl';
 import type { SessionInit } from '../../game/session';
-import { FEATURED } from '../../platform/geo';
 import { decodeSave } from '../../platform/saveCode';
 import { deleteSlot, listSlots, loadSlot, slotCode, type SlotSummary } from '../../platform/storage';
-import { createCityMap } from '../../render/preview';
+import type { MenuScene } from '../../render/menuScene';
 import { Button, Stars } from '../components';
 import { ago, compactMoney, playtime } from '../format';
 import { Icon } from '../icons';
@@ -13,34 +11,29 @@ import { SettingsContent } from '../hud/SettingsPanel';
 
 type Tab = null | 'load' | 'code' | 'help' | 'settings';
 
+/** matches the .menu-backdrop opacity transition */
+const FADE_MS = 900;
+
 function Backdrop() {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    let map: MlMap | null = null;
-    let raf = 0, cycle = 0, alive = true;
-    const order = [...FEATURED].sort(() => Math.random() - 0.5);
-    let i = 0;
-    createCityMap(ref.current!, { style: 'dark', center: [order[0].lng, order[0].lat], zoom: 15.6, pitch: 62, bearing: 20, interactive: false })
-      .then((m) => {
-        if (!alive) { m.remove(); return; }
-        map = m;
+    let alive = true, timer = 0;
+    let scene: MenuScene | null = null;
+    // the map engine is the heaviest thing in the game; the menu is already on screen while it loads
+    import('../../render/menuScene')
+      .then((m) => m.createMenuScene(ref.current!))
+      .then((s) => {
+        if (!alive) { s.destroy(); return; }
+        scene = s;
+        if (import.meta.env.DEV) (window as unknown as { __menu: unknown }).__menu = s.debug;
+        // it arrives fully loaded and standing still on the same frame as the still image:
+        // fade it in, and only once it is all there let it start to move
         setReady(true);
-        let last = performance.now();
-        const spin = (t: number) => {
-          if (!map) return;
-          map.setBearing(map.getBearing() + ((t - last) / 1000) * 2.2);
-          last = t;
-          raf = requestAnimationFrame(spin);
-        };
-        raf = requestAnimationFrame(spin);
-        cycle = window.setInterval(() => {
-          i = (i + 1) % order.length;
-          map?.flyTo({ center: [order[i].lng, order[i].lat], zoom: 15.6, pitch: 62, duration: 5000, essential: true });
-        }, 28000);
+        timer = window.setTimeout(() => s.start(), FADE_MS + 150);
       })
-      .catch(() => { /* the gradient behind stands in */ });
-    return () => { alive = false; cancelAnimationFrame(raf); clearInterval(cycle); map?.remove(); };
+      .catch(() => { /* the still image behind stands in */ });
+    return () => { alive = false; clearTimeout(timer); scene?.destroy(); };
   }, []);
   return <div ref={ref} className={`menu-backdrop ${ready ? 'ready' : ''}`} aria-hidden="true" />;
 }
