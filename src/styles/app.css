@@ -152,7 +152,7 @@ input[type='range'] { width: 100%; accent-color: var(--gold); }
 /* the still is a frame of the live backdrop, so the page is dressed before the map has loaded */
 /* fitted by height, like the live map's camera, so the two line up on any screen shape */
 .menu, .boot { position: fixed; inset: 0; background: #0a0e15 url('/menu-hero.jpg') center / auto 100% no-repeat; }
-.menu-backdrop { position: absolute; inset: 0; opacity: 0; transition: opacity 0.9s var(--ease); }
+.menu-backdrop, .menu-backdrop.maplibregl-map { position: absolute; inset: 0; opacity: 0; transition: opacity 0.9s var(--ease); }
 .menu-backdrop.ready { opacity: 1; }
 .menu-backdrop .maplibregl-ctrl-attrib { display: none; }
 .menu-shade { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(8, 11, 17, 0.96) 0%, rgba(8, 11, 17, 0.82) 30%, rgba(8, 11, 17, 0.25) 62%, rgba(8, 11, 17, 0.05) 100%); }
@@ -198,7 +198,7 @@ textarea:focus { outline: none; border-color: var(--gold); }
 
 /* ---------- new game ---------- */
 .newgame { position: fixed; inset: 0; }
-.newgame-map { position: absolute; inset: 0; background: #e9ebe4; }
+.newgame-map, .newgame-map.maplibregl-map { position: absolute; inset: 0; background: #e9ebe4; }
 .newgame-panel { position: absolute; left: 16px; top: 16px; bottom: 16px; width: min(430px, calc(100% - 32px)); background: var(--panel-a); border: 1px solid var(--border-2); border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 18px 20px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
 .newgame-panel h1 { font-size: 24px; font-weight: 800; }
 .back-link { align-self: flex-start; background: none; border: 0; color: var(--fg-3); cursor: pointer; padding: 0; font-size: 13px; }
@@ -257,7 +257,8 @@ textarea:focus { outline: none; border-color: var(--gold); }
 
 /* ---------- game ---------- */
 .game { position: fixed; inset: 0; overflow: hidden; background: #e6e3d8; }
-.game-map { position: absolute; inset: 0; }
+/* maplibre-gl.css loads with the lazy game chunk, after this file, and its .maplibregl-map { position: relative } would win a tie */
+.game-map, .game-map.maplibregl-map { position: absolute; inset: 0; }
 .game-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .game-cover { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; background: var(--bg); color: var(--fg-2); }
 .hud { position: absolute; inset: 0; pointer-events: none; }
